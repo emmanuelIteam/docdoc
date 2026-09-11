@@ -1,0 +1,61 @@
+# Single-host deployment for the personal projects outliner.
+# The data layer is stored in an S3-compatible bucket: Scaleway Object Storage
+# in production, or the local MinIO service below in development. The app needs
+# no filesystem volume for its data anymore.
+
+services:
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+      # Alias for the `mc ready local` healthcheck (no cURL in the image).
+      MC_HOST_local: http://minioadmin:minioadmin@localhost:9000
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # Web console
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  web:
+    build: .
+    image: gestion-prj-perso:latest
+    container_name: gestion-prj-perso
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      - PORT=3000
+      - S3_ENDPOINT=http://minio:9000
+      - S3_REGION=fr-par
+      - S3_BUCKET=docdoc-json-storage
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin
+    volumes:
+      # Read-only legacy import source: on first run against an empty bucket the
+      # app imports the local data files, then the bucket becomes the store.
+      - ./data:/app/data
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+    # The data layer is S3-backed; exactly one replica is enough for this
+    # single-writer app.
+    deploy:
+      replicas: 1
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  minio-data:
+    name: gestion-prj-perso-minio-data

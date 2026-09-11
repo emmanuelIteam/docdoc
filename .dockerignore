@@ -1,0 +1,13 @@
+# Keep the build context small and prevent host files from leaking into the image.
+# Runtime files only: package.json, package-lock.json, server.js, public/
+
+node_modules/
+.npm-cache/
+data/
+.git/
+.github/
+openspec/
+
+# Docs and metadata (not needed at runtime)
+**/*.md
+*.md

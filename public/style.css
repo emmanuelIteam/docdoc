@@ -1,0 +1,347 @@
+:root {
+  --accent: #2563eb;
+  --accent-dark: #1d4ed8;
+  --done: #71717a;
+  --bg: #fafafa;
+  --card: #ffffff;
+  --border: #e4e4e7;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: #18181b;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  line-height: 1.5;
+}
+
+/* ------------------------------------------------------------------ */
+/* Shell: sidebar | content                                            */
+/* ------------------------------------------------------------------ */
+
+.shell {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: 1fr auto;
+  min-height: 100vh;
+}
+body.sidebar-collapsed .shell { grid-template-columns: 0 1fr; }
+
+.shell-footer {
+  grid-column: 1 / -1;
+  background: var(--card);
+  border-top: 1px solid var(--border);
+  padding: .75rem 1.5rem;
+}
+
+.sidebar {
+  width: 240px;
+  overflow: hidden;
+  background: var(--card);
+  border-right: 1px solid var(--border);
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  transition: width .15s ease;
+}
+body.sidebar-collapsed .sidebar { width: 0; padding: 0; border-right: none; }
+
+.sidebar-header {
+  font-weight: 700;
+  font-size: .8rem;
+  color: var(--done);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  margin-bottom: .75rem;
+  white-space: nowrap;
+}
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: .15rem;
+  flex: 1;
+  overflow-y: auto;
+}
+.sidebar-link {
+  display: block;
+  padding: .4rem .5rem;
+  border-radius: .4rem;
+  color: #18181b;
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sidebar-link:hover { background: #f4f4f5; }
+.sidebar-link.active { background: #eef2ff; color: var(--accent-dark); font-weight: 600; }
+.sidebar-empty { color: var(--done); font-size: .85rem; padding: .25rem .5rem; }
+
+.sidebar-footer { margin-top: .75rem; border-top: 1px solid var(--border); padding-top: .75rem; }
+.new-domain-form { display: flex; flex-direction: column; gap: .4rem; margin-top: .5rem; }
+.new-domain-form input,
+.rename-input {
+  font: inherit;
+  padding: .4rem .5rem;
+  border: 1px solid var(--border);
+  border-radius: .4rem;
+  background: var(--card);
+}
+.inline-form .rename-input { width: 14ch; }
+
+/* Content */
+.content { padding: 1.5rem; min-width: 0; }
+.topbar { display: flex; align-items: center; gap: .75rem; margin-bottom: 1rem; }
+.topbar h1 { margin: 0; font-size: 1.4rem; font-weight: 700; }
+
+h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+.btn {
+  border: 1px solid var(--border);
+  background: var(--card);
+  padding: .45rem .9rem;
+  border-radius: .5rem;
+  cursor: pointer;
+  font-size: .95rem;
+  color: #18181b;
+}
+.btn:hover { border-color: var(--accent); color: var(--accent); }
+.btn.danger { color: #dc2626; }
+.btn.danger:hover { border-color: #dc2626; background: #fef2f2; }
+
+.inline-form { display: inline-flex; align-items: center; gap: .4rem; }
+
+.hint { color: var(--done); font-size: .85rem; margin: 0; }
+
+.empty-state { padding: 3rem 1rem; text-align: center; }
+.empty-state h2 { margin: 0 0 .5rem; }
+.empty-state p { color: var(--done); }
+
+/* Outline
+   The outline is a flat sequence of lines: each `.line` carries its depth in
+   `--depth` (set inline by the server) and is indented with a left margin
+   rather than by nesting, so a line's vertical position is independent of the
+   DOM structure. A margin (not padding) keeps the absolutely-positioned
+   context menu aligned with the indented line. */
+.outline { list-style: none; margin: 0; padding: 0; }
+
+.line {
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+  padding: .04rem .4rem;
+  border-radius: .4rem;
+  position: relative;
+  cursor: default;
+  user-select: none;
+  margin-left: calc(var(--depth, 0) * 1.6rem);
+}
+.line:hover { background: #f4f4f5; }
+
+/* Selection button (revealed on hover).
+   The bullet is the only leading control on a line: it selects the line (and
+   its subtree) on a single click and collapses/expands it on a double click.
+   The bullet always occupies its slot in the flex layout (so the title never
+   shifts when it appears), but it is only visible on hover / when selected. */
+.bullet {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--accent);
+  font-size: .7rem;
+  padding: 0;
+  width: .7rem;
+  flex: 0 0 auto;
+  visibility: hidden;
+}
+.line:hover .bullet,
+.line.selected .bullet { visibility: visible; }
+.line.selected { background: #eef2ff; }
+
+/* Deep-linked line (the current URL fragment target). Visually distinct from a
+   selected line so a shared link is not confused with an in-progress edit. */
+.line:target {
+  background: #dbeafe;
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+/* Title formatting */
+.title { cursor: text; line-height: 1.25; }
+.title.status-in-progress { font-weight: 700; }
+.title.status-done { font-style: italic; color: var(--done); text-decoration: line-through; }
+
+.title-input {
+  font: inherit;
+  line-height: 1.25; /* match .title so the caret stays on the title baseline */
+  color: inherit;
+  background: transparent;
+  border: none;
+  border-bottom: 1px dashed var(--done);
+  border-radius: 0;
+  padding: 0;
+  margin: 0;
+  outline: none;
+  width: auto;
+  min-width: 2ch;
+  flex: 0 1 auto;
+}
+
+/* Context menu (shown on hover or selection) */
+.menu {
+  display: none;
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 2px);
+  z-index: 20;
+  background: var(--card);
+  border: 1px solid #c9ced6;
+  border-radius: .5rem;
+  box-shadow: 0 10px 28px rgba(15,23,42,.24);
+  padding: .25rem;
+  flex-direction: row;
+  gap: .15rem;
+}
+.line.selected-head .menu { display: flex; }
+
+/* Hover bridge: an invisible strip below the menu connects it to the line so
+   the pointer can travel onto the menu (anchored above the line) without
+   crossing a dead zone that would close it. */
+.menu::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: 6px;
+}
+
+.menu-item {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1;
+  font-family: inherit;
+  color: #111827;
+  width: 1.8rem;
+  height: 1.8rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: .35rem;
+  padding: 0;
+}
+.menu-item:hover { background: #f4f4f5; }
+.menu-item.active { background: #eef2ff; color: var(--accent-dark); }
+.menu-item.danger { color: #dc2626; }
+.menu-item.danger:hover { background: #fef2f2; }
+
+/* Drag-and-drop move (started from the selection button)
+   All indicators use inset box-shadow on the line's own border box so they
+   never shift the title or its neighbours. */
+.line.dragging { opacity: .55; }
+.line.drop-target { background: #eef2ff; }
+.line.drop-before { box-shadow: inset 0 2px 0 0 var(--accent); }
+.line.drop-after { box-shadow: inset 0 -2px 0 0 var(--accent); }
+.line.drop-inside { box-shadow: inset 0 0 0 2px var(--accent); }
+.line.drop-invalid { background: #fef2f2; box-shadow: inset 0 0 0 2px #dc2626; }
+#outline.drop-root { box-shadow: inset 0 0 0 2px var(--accent); }
+
+/* Offscreen clone used as the drag image: it shows the dragged line together
+   with its whole subtree (setDragImage needs a rendered element). */
+.drag-ghost {
+  position: absolute;
+  top: 0;
+  left: -9999px;
+  pointer-events: none;
+  width: max-content;
+  min-width: 12rem;
+}
+
+/* Transient feedback toast (e.g. "Lien copié"). */
+.toast {
+  position: fixed;
+  bottom: 1.25rem;
+  left: 50%;
+  transform: translate(-50%, 1rem);
+  background: #18181b;
+  color: #fff;
+  padding: .5rem .9rem;
+  border-radius: .5rem;
+  font-size: .9rem;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .2s ease, transform .2s ease;
+  z-index: 100;
+}
+.toast.show {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+/* ------------------------------------------------------------------ */
+/* Themes (étiquettes): sidebar groups + domain chips.                 */
+/* ------------------------------------------------------------------ */
+
+.sidebar-actions { display: flex; gap: .4rem; flex-wrap: wrap; }
+.new-theme-form { display: flex; flex-direction: column; gap: .4rem; margin-top: .5rem; }
+.new-theme-form input,
+.theme-name-input {
+  font: inherit;
+  padding: .4rem .5rem;
+  border: 1px solid var(--border);
+  border-radius: .4rem;
+  background: var(--card);
+}
+.theme-name-input { width: 11ch; padding: .2rem .3rem; font-size: .85rem; }
+.color-field { display: inline-flex; align-items: center; gap: .4rem; font-size: .85rem; color: var(--done); }
+.color-field input[type="color"] { width: 2.4rem; height: 1.9rem; padding: 0; border: 1px solid var(--border); border-radius: .4rem; background: var(--card); }
+
+.theme-group { margin-bottom: .35rem; }
+.theme-group-header { display: flex; align-items: center; gap: .35rem; padding: .25rem .5rem; border-radius: .4rem; }
+.theme-group-header:hover { background: #f4f4f5; }
+.theme-dot { width: .8rem; height: .8rem; border-radius: 50%; flex: 0 0 auto; display: inline-block; }
+.theme-group-name { font-weight: 600; font-size: .9rem; }
+.theme-group-domains { margin-left: .3rem; padding-left: .9rem; border-left: 2px solid var(--border); display: flex; flex-direction: column; gap: .1rem; }
+.sidebar-muted { color: var(--done); font-size: .8rem; padding: .1rem .5rem; }
+
+.btn-mini {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: .85rem;
+  line-height: 1;
+  width: 1.5rem;
+  height: 1.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: .35rem;
+  color: #111827;
+  padding: 0;
+}
+.btn-mini:hover { background: #f4f4f5; }
+.btn-mini.danger { color: #dc2626; }
+.btn-mini.danger:hover { background: #fef2f2; }
+
+.labels-zone { display: flex; align-items: center; gap: .35rem; flex-wrap: wrap; }
+.labels-label { font-size: .8rem; color: var(--done); text-transform: uppercase; letter-spacing: .04em; }
+.label-chip { display: inline-flex; align-items: center; gap: .35rem; border: 1px solid var(--border); border-radius: 999px; padding: .15rem .25rem .15rem .5rem; background: var(--card); }
+.label-chip-dot { width: .65rem; height: .65rem; border-radius: 50%; flex: 0 0 auto; }
+.label-chip-name { font-size: .85rem; }
+.label-chip-x { border: none; background: transparent; cursor: pointer; color: var(--done); font-size: .9rem; line-height: 1; width: 1.1rem; height: 1.1rem; border-radius: 50%; padding: 0; }
+.label-chip-x:hover { background: #fef2f2; color: #dc2626; }
+.label-attach-form { display: inline-flex; align-items: center; gap: .4rem; }
+.label-attach-form select { font: inherit; padding: .3rem .4rem; border: 1px solid var(--border); border-radius: .4rem; background: var(--card); }
+.label-attach-empty { margin: 0; color: var(--done); font-size: .85rem; }

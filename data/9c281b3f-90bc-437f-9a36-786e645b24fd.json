@@ -1,0 +1,26 @@
+{
+  "id": "9c281b3f-90bc-437f-9a36-786e645b24fd",
+  "name": "maison",
+  "slug": "maison",
+  "order": 1,
+  "labels": [
+    "b81d8160-ab79-475a-9031-9298f1042749",
+    "d9beb146-bf5d-4119-9d2d-247dfc2e2618"
+  ],
+  "projects": [
+    {
+      "id": "c8e48efb-1ef8-4b0e-a376-94f400dbfd24",
+      "title": "Télévision",
+      "status": "todo",
+      "collapsed": false,
+      "children": []
+    },
+    {
+      "id": "40caf9f7-16d8-46ed-9903-77d37ced2742",
+      "title": "Guitare",
+      "status": "todo",
+      "collapsed": false,
+      "children": []
+    }
+  ]
+}

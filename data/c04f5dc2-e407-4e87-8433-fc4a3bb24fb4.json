@@ -1,0 +1,106 @@
+{
+  "id": "c04f5dc2-e407-4e87-8433-fc4a3bb24fb4",
+  "name": "Projets",
+  "slug": "projets",
+  "order": 0,
+  "labels": [],
+  "projects": [
+    {
+      "id": "bcc0b1f1-d223-4cb6-9c41-89ef584e5268",
+      "title": "Rénovation cuisine",
+      "status": "todo",
+      "collapsed": false,
+      "children": [
+        {
+          "id": "ba67ae63-53dc-45d6-879d-9b69ee076c23",
+          "title": "Choisir les meubles",
+          "status": "todo",
+          "collapsed": false,
+          "children": [
+            {
+              "id": "6b4d7775-2713-427c-b11d-33e8f28a7f82",
+              "title": "Comparer 3 devis en cours",
+              "status": "todo",
+              "collapsed": false,
+              "children": [
+                {
+                  "id": "f4f21726-b1a7-4df0-8b69-d69400940685",
+                  "title": "Peindre",
+                  "status": "todo",
+                  "collapsed": false,
+                  "children": []
+                }
+              ]
+            },
+            {
+              "id": "db9e2f96-9691-4bd0-9b63-df1748e9276d",
+              "title": "Nouvelle tâche à créer éventuellement",
+              "status": "todo",
+              "collapsed": false,
+              "children": [
+                {
+                  "id": "f9a9d846-8243-4b52-a529-03531d72f72c",
+                  "title": "Devis avec un artisant",
+                  "status": "todo",
+                  "collapsed": false,
+                  "children": []
+                }
+              ]
+            },
+            {
+              "id": "90126e6a-0b63-4a6e-8d29-e905f6c4e556",
+              "title": "Nouvelle tâche",
+              "status": "todo",
+              "collapsed": false,
+              "children": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ff1591fa-b866-4c6c-a17d-4e3f9f45f262",
+      "title": "Entretien voiture",
+      "status": "todo",
+      "collapsed": false,
+      "children": [
+        {
+          "id": "4894bc82-3b95-42f8-9a09-296e27e3438a",
+          "title": "Vidange",
+          "status": "todo",
+          "collapsed": false,
+          "children": []
+        },
+        {
+          "id": "8cf4ca4e-9669-4e7f-9c34-6a5d1aea9e3e",
+          "title": "Contrôle technique",
+          "status": "todo",
+          "collapsed": false,
+          "children": []
+        }
+      ]
+    },
+    {
+      "id": "51281fd5-11c5-4e12-811e-2477e1f2626b",
+      "title": "Vacances été",
+      "status": "in_progress",
+      "collapsed": false,
+      "children": [
+        {
+          "id": "f5ba39db-d9d9-45ce-992a-d60af7887b82",
+          "title": "Réserver le camping",
+          "status": "todo",
+          "collapsed": false,
+          "children": []
+        },
+        {
+          "id": "7bbcc654-198a-41e2-936d-27d8fe4b4b1f",
+          "title": "Préparer l’itinéraire",
+          "status": "todo",
+          "collapsed": false,
+          "children": []
+        }
+      ]
+    }
+  ]
+}
