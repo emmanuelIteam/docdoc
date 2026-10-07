@@ -1,0 +1,4 @@
+# Les scripts shell doivent garder des fins de ligne LF, même sous Windows :
+# un .sh converti en CRLF fait échouer bash avec « $'\r': command not found ».
+# Nécessaire ici car core.autocrlf=true sur ce poste.
+*.sh text eol=lf

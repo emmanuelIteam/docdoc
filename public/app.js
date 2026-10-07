@@ -599,3 +599,12 @@ if (labelAddBtn && labelAttachForm) {
 }
 
 applySidebarState();
+
+// An expired session must send the browser back to the home page instead of
+// letting a 401 body be swapped into #outline. The server sets HX-Redirect on
+// htmx requests; this is the fallback when a response carries no such header.
+document.body.addEventListener('htmx:responseError', (e) => {
+  if (e.detail && e.detail.xhr && e.detail.xhr.status === 401) {
+    window.location.href = '/';
+  }
+});

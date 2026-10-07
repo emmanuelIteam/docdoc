@@ -1,26 +1,40 @@
 'use strict';
 
 const express = require('express');
+const session = require('express-session');
 const path = require('path');
-const fs = require('fs/promises');
 const crypto = require('crypto');
 
 const storage = require('./storage');
+const accounts = require('./accounts');
+const migration = require('./migration');
+const mailer = require('./mailer');
+const passkeys = require('./passkeys');
+const { createAuth } = require('./authroutes');
 
-const DATA_DIR = path.join(__dirname, 'data');
-const LEGACY_FILE = path.join(DATA_DIR, 'projects.json');
-const THEMES_FILE = path.join(DATA_DIR, 'themes.json');
-const DOMAINS_PREFIX = 'domains/';
-const ARCHIVE_PREFIX = 'archive/';
-const THEMES_KEY = 'themes.json';
 const PORT = process.env.PORT || 3000;
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days, sliding
 
-function domainKey(id) {
-  return DOMAINS_PREFIX + id + '.json';
-}
+// The accounts allowed to hold a space. One address by default, but the rule is
+// configuration rather than a literal in the code, so opening docdoc to another
+// address is a deployment change.
+const AUTHORIZED_EMAILS = String(process.env.AUTHORIZED_EMAILS || 'emmanuel.grandiere@laposte.net')
+  .split(',')
+  .map((value) => value.trim().toLowerCase())
+  .filter(Boolean);
 
-function archiveKey(id) {
-  return ARCHIVE_PREFIX + id + '.json';
+// A session secret is mandatory in production; in development an ephemeral one
+// keeps the app runnable (at the cost of losing sessions on restart).
+function sessionSecret() {
+  const configured = process.env.SESSION_SECRET;
+  if (configured) return configured;
+  if (IS_PRODUCTION) {
+    console.error('SESSION_SECRET est obligatoire en production.');
+    process.exit(1);
+  }
+  console.warn('\u26a0 SESSION_SECRET absent : un secret éphémère est utilisé pour cette exécution.');
+  return crypto.randomBytes(32).toString('hex');
 }
 
 // A preset palette used to give a new theme a tasteful default color when the
@@ -28,74 +42,129 @@ function archiveKey(id) {
 const DEFAULT_THEME_COLORS = ['#2563eb', '#14b8a6', '#f59e0b', '#ef4444', '#8b5cf6', '#10b981'];
 
 const app = express();
+app.set('trust proxy', 1);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
+
+app.use(
+  session({
+    name: 'docdoc.sid',
+    secret: sessionSecret(),
+    resave: false,
+    saveUninitialized: false,
+    rolling: true,
+    cookie: {
+      httpOnly: true,
+      sameSite: 'lax',
+      // The cookie only travels over HTTPS in production; localhost stays plain.
+      secure: IS_PRODUCTION,
+      maxAge: SESSION_TTL_MS,
+    },
+  })
+);
+
+/* ------------------------------------------------------------------ */
+/* Per-account working set                                             */
+/*                                                                     */
+/* The application used to serve one anonymous tenant, so its domains,  */
+/* domain list and theme palette could live in module-level singletons. */
+/* They are now resolved per account: everything a request reads comes  */
+/* from the space of the session's account and nothing else.            */
+/* ------------------------------------------------------------------ */
+
+function makeSpace(userId) {
+  return {
+    userId,
+    domains: new Map(),
+    domainList: [],
+    themes: [],
+    writeQueue: Promise.resolve(),
+  };
+}
+
+const spaces = new Map();
+
+// Resolve (and cache) the working set of an account. A failed load is not
+// cached, so a transient storage error does not poison the account for the
+// lifetime of the process.
+function spaceFor(userId) {
+  const cached = spaces.get(userId);
+  if (cached) return cached;
+  const pending = loadSpace(userId).catch((err) => {
+    spaces.delete(userId);
+    throw err;
+  });
+  spaces.set(userId, pending);
+  return pending;
+}
+
+function invalidateSpace(userId) {
+  spaces.delete(userId);
+}
+
+async function loadSpace(userId) {
+  const space = makeSpace(userId);
+  await loadThemes(space);
+  await loadDomains(space);
+  return space;
+}
+
+/* --- Theme palette helpers ----------------------------------------- */
+
+function normalizeTheme(raw) {
+  return {
+    id: String(raw.id),
+    name: typeof raw.name === 'string' && raw.name ? raw.name : 'Thème',
+    color: typeof raw.color === 'string' && raw.color ? raw.color : DEFAULT_THEME_COLORS[0],
+  };
+}
+
+function findThemeById(space, id) {
+  return space.themes.find((t) => t.id === id) || null;
+}
+
+// Rotate through the preset palette based on how many themes exist, so a new
+// theme created without an explicit color still gets a distinct, pleasant one.
+function nextThemeColor(space) {
+  return DEFAULT_THEME_COLORS[space.themes.length % DEFAULT_THEME_COLORS.length];
+}
+
+// Respond by returning the user to where they came from (the sidebar and the
+// domain page are both server-rendered, so a redirect refreshes both).
+function backTo(req) {
+  return req.headers.referer || '/';
+}
+
+async function loadThemes(space) {
+  const parsed = await storage.readJson(storage.themesKey(space.userId));
+  if (!Array.isArray(parsed)) {
+    space.themes = [];
+    return;
+  }
+  space.themes = parsed.filter((t) => t && typeof t.id === 'string').map(normalizeTheme);
+}
+
+function persistThemes(space) {
+  space.writeQueue = space.writeQueue
+    .then(() => storage.writeJson(storage.themesKey(space.userId), space.themes))
+    .catch((err) => {
+      console.error('Erreur d\u2019écriture palette:', err);
+    });
+  return space.writeQueue;
+}
 
 /* ------------------------------------------------------------------ */
 /* Domain model + persistence                                          */
 /* ------------------------------------------------------------------ */
 
-// In-memory domains keyed by id. A domain is { id, name, slug, order, projects[] }
-// where `projects` is the outline (each root node = a project), plus `labels`
-// holding the ids of the themes (étiquettes) attached to the domain.
-const domains = new Map();
-// Ordered array of domain metas, for the sidebar navigation.
-let domainList = [];
-// In-memory theme palette (insertion order). A theme is { id, name, color }.
-let themes = [];
-
 function genId() {
   return crypto.randomUUID();
 }
 
-function seedOutline() {
-  return [
-    {
-      id: genId(),
-      title: 'Rénovation cuisine',
-      status: 'in_progress',
-      collapsed: false,
-      children: [
-        { id: genId(), title: 'Définir le budget', status: 'done', collapsed: false, children: [] },
-        {
-          id: genId(),
-          title: 'Choisir les meubles',
-          status: 'todo',
-          collapsed: false,
-          children: [
-            { id: genId(), title: 'Comparer 3 devis', status: 'todo', collapsed: false, children: [] },
-          ],
-        },
-        { id: genId(), title: 'Peindre', status: 'todo', collapsed: false, children: [] },
-      ],
-    },
-    {
-      id: genId(),
-      title: 'Entretien voiture',
-      status: 'todo',
-      collapsed: false,
-      children: [
-        { id: genId(), title: 'Vidange', status: 'in_progress', collapsed: false, children: [] },
-        { id: genId(), title: 'Contrôle technique', status: 'todo', collapsed: false, children: [] },
-      ],
-    },
-    {
-      id: genId(),
-      title: 'Vacances été',
-      status: 'done',
-      collapsed: false,
-      children: [
-        { id: genId(), title: 'Réserver le camping', status: 'done', collapsed: false, children: [] },
-        { id: genId(), title: 'Préparer l\u2019itinéraire', status: 'todo', collapsed: false, children: [] },
-      ],
-    },
-  ];
-}
-
 const VALID_STATUSES = ['todo', 'in_progress', 'done'];
 
-function normalizeDomain(raw) {
+function normalizeDomain(themes, raw) {
   // Keep only theme ids that still exist in the palette (prune orphans from
   // manual file edits or a removed theme). Default to [] for files written
   // before the `labels` field existed.
@@ -119,73 +188,6 @@ function normalizeDomain(raw) {
   };
 }
 
-/* --- Theme palette helpers ----------------------------------------- */
-
-function normalizeTheme(raw) {
-  return {
-    id: String(raw.id),
-    name: typeof raw.name === 'string' && raw.name ? raw.name : 'Thème',
-    color: typeof raw.color === 'string' && raw.color ? raw.color : DEFAULT_THEME_COLORS[0],
-  };
-}
-
-function findThemeById(id) {
-  return themes.find((t) => t.id === id) || null;
-}
-
-// Rotate through the preset palette based on how many themes exist, so a new
-// theme created without an explicit color still gets a distinct, pleasant one.
-function nextThemeColor() {
-  return DEFAULT_THEME_COLORS[themes.length % DEFAULT_THEME_COLORS.length];
-}
-
-// Respond by returning the user to where they came from (the sidebar and the
-// domain page are both server-rendered, so a redirect refreshes both).
-function backTo(req) {
-  return req.headers.referer || '/';
-}
-
-async function loadThemes() {
-  let parsed = null;
-  if (storage.isConfigured()) {
-    parsed = await storage.readJson(THEMES_KEY);
-    // One-time import of the local palette when the bucket has none yet.
-    if (!Array.isArray(parsed)) {
-      const local = await readLocalJson(THEMES_FILE);
-      if (Array.isArray(local)) {
-        parsed = local;
-        await storage.writeJson(THEMES_KEY, local);
-      }
-    }
-  }
-  if (!Array.isArray(parsed)) {
-    themes = [];
-    return;
-  }
-  themes = parsed.filter((t) => t && typeof t.id === 'string').map(normalizeTheme);
-}
-
-function persistThemes() {
-  writeQueue = writeQueue
-    .then(() => storage.writeJson(THEMES_KEY, themes))
-    .catch((err) => {
-      console.error('Erreur d\u2019écriture palette:', err);
-    });
-  return writeQueue;
-}
-
-// Read and parse a local JSON file from the filesystem. This is used only for
-// the legacy single-file outline and for the one-time local -> bucket import;
-// the data layer itself lives in the S3 bucket.
-async function readLocalJson(filePath) {
-  try {
-    const raw = await fs.readFile(filePath, 'utf8');
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-
 // The JSON payload written for a domain, stored under its own bucket key.
 function domainPayload(domain) {
   return {
@@ -199,23 +201,21 @@ function domainPayload(domain) {
   };
 }
 
-// Serialize writes so concurrent mutations cannot interleave on the files.
-let writeQueue = Promise.resolve();
-function persistDomain(domain) {
+function persistDomain(space, domain) {
   // Keep the outline's display order in sync with the tree before every write
   // (a no-op when the order is already valid), so no mutation can leave a line
   // out of the outline's display order.
   domain.displayOrder = ensureDisplayOrder(domain.projects, domain.displayOrder);
-  writeQueue = writeQueue
-    .then(() => storage.writeJson(domainKey(domain.id), domainPayload(domain)))
+  space.writeQueue = space.writeQueue
+    .then(() => storage.writeJson(storage.domainKey(space.userId, domain.id), domainPayload(domain)))
     .catch((err) => {
       console.error('Erreur d\u2019écriture:', err);
     });
-  return writeQueue;
+  return space.writeQueue;
 }
 
-function rebuildDomainList() {
-  domainList = [...domains.values()]
+function rebuildDomainList(space) {
+  space.domainList = [...space.domains.values()]
     .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name))
     .map((d) => ({
       id: d.id,
@@ -226,18 +226,18 @@ function rebuildDomainList() {
     }));
 }
 
-function findDomainBySlug(slug) {
-  for (const d of domains.values()) if (d.slug === slug) return d;
+function findDomainBySlug(space, slug) {
+  for (const d of space.domains.values()) if (d.slug === slug) return d;
   return null;
 }
 
-function findDomainById(id) {
-  return domains.get(id) || null;
+function findDomainById(space, id) {
+  return space.domains.get(id) || null;
 }
 
-function nextOrder() {
+function nextOrder(space) {
   let max = -1;
-  for (const d of domainList) if (d.order > max) max = d.order;
+  for (const d of space.domainList) if (d.order > max) max = d.order;
   return max + 1;
 }
 
@@ -250,89 +250,43 @@ function normalizeSlugBase(name) {
     .replace(/^-+|-+$/g, '');
 }
 
-function slugify(name, exceptId) {
+function slugify(space, name, exceptId) {
   const base = normalizeSlugBase(name) || 'domaine';
   let slug = base;
   let n = 2;
-  while ([...domains.values()].some((d) => d.id !== exceptId && d.slug === slug)) {
+  while ([...space.domains.values()].some((d) => d.id !== exceptId && d.slug === slug)) {
     slug = `${base}-${n}`;
     n += 1;
   }
   return slug;
 }
 
-function makeDomain(name, projects) {
+function makeDomain(space, name, projects) {
   const outline = projects || [];
   return {
     id: genId(),
     name,
-    slug: slugify(name),
-    order: nextOrder(),
+    slug: slugify(space, name),
+    order: nextOrder(space),
     projects: outline,
     displayOrder: canonicalOrder(outline),
     labels: [],
   };
 }
 
-// One-time migration: import the existing local `data/*.json` domain files into
-// the bucket as `domains/{id}.json`. Runs only when the `domains/` prefix is
-// empty, so it is idempotent and never overwrites live bucket data.
-async function importLocalData() {
-  await fs.mkdir(DATA_DIR, { recursive: true });
-  const files = (await fs.readdir(DATA_DIR)).filter(
-    (f) => f.endsWith('.json') && f !== 'projects.json' && f !== 'projects.json.bak' && f !== 'themes.json'
-  );
-
-  const imported = [];
-  for (const f of files) {
-    const parsed = await readLocalJson(path.join(DATA_DIR, f));
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
-    if (typeof parsed.id !== 'string' || !Array.isArray(parsed.projects)) continue;
-    const domain = normalizeDomain(parsed);
-    await storage.writeJson(domainKey(domain.id), domainPayload(domain));
-    imported.push(domain);
-  }
-  return imported;
-}
-
-async function loadDomains() {
-  const keys = await storage.listKeys(DOMAINS_PREFIX);
+// Load the account's domains from its own prefix. A bucket that holds no domain
+// for this account yields an empty space: no example outline is invented.
+async function loadDomains(space) {
+  const keys = await storage.listDomainKeys(space.userId);
   const loaded = [];
   for (const key of keys) {
     const parsed = await storage.readJson(key);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
     if (typeof parsed.id !== 'string' || !Array.isArray(parsed.projects)) continue;
-    loaded.push(normalizeDomain(parsed));
+    loaded.push(normalizeDomain(space.themes, parsed));
   }
-
-  if (loaded.length === 0) {
-    if (storage.isConfigured()) {
-      // One-time migration: import the existing local data files into the bucket.
-      const imported = await importLocalData();
-      loaded.push(...imported);
-    }
-
-    if (loaded.length === 0) {
-      const legacy = await readLocalJson(LEGACY_FILE);
-      let domain;
-      if (Array.isArray(legacy)) {
-        domain = makeDomain('Projets', legacy);
-      } else {
-        domain = makeDomain('Projets', seedOutline());
-      }
-      domains.set(domain.id, domain);
-      if (Array.isArray(legacy)) {
-        // Preserve the original file rather than deleting it.
-        await fs.rename(LEGACY_FILE, path.join(DATA_DIR, 'projects.json.bak'));
-      }
-      await persistDomain(domain);
-      rebuildDomainList();
-      return;
-    }
-  }
-
-  for (const d of loaded) domains.set(d.id, d);
-  rebuildDomainList();
+  for (const d of loaded) space.domains.set(d.id, d);
+  rebuildDomainList(space);
 }
 
 /* ------------------------------------------------------------------ */
@@ -830,13 +784,13 @@ function domainLink(d, activeSlug) {
   return `<a class="${cls}" href="/domaine/${d.slug}">${escapeHtml(d.name)}</a>`;
 }
 
-function renderSidebar(activeSlug) {
+function renderSidebar(space, activeSlug) {
   // Group domains by theme, then list domains that carry no theme label under a
   // "Sans thème" section. A domain carrying several theme labels is listed under
   // each corresponding theme group (cross-cutting view).
-  const themeGroups = themes
+  const themeGroups = space.themes
     .map((t) => {
-      const members = domainList
+      const members = space.domainList
         .filter((d) => d.labels.includes(t.id))
         .map((d) => domainLink(d, activeSlug))
         .join('');
@@ -858,7 +812,7 @@ function renderSidebar(activeSlug) {
     })
     .join('');
 
-  const untagged = domainList.filter((d) => d.labels.length === 0);
+  const untagged = space.domainList.filter((d) => d.labels.length === 0);
   const untaggedGroup = untagged.length
     ? `<div class="theme-group">
         <div class="theme-group-header">
@@ -890,11 +844,18 @@ function renderSidebar(activeSlug) {
           <input name="name" placeholder="Nom du domaine" required autocomplete="off">
           <button type="submit" class="btn">Créer</button>
         </form>
+        <div class="session-box">
+          <span class="session-email" title="${escapeHtml(space.email || '')}">${escapeHtml(space.email || '')}</span>
+          <a class="btn-mini" href="/auth/passkeys" title="Gérer mes passkeys">🔑</a>
+          <form method="post" action="/logout" class="inline-form">
+            <button type="submit" class="btn-mini" title="Déconnexion">Déconnexion</button>
+          </form>
+        </div>
       </div>
     </aside>`;
 }
 
-function renderShell(content, activeSlug, opts = {}) {
+function renderShell(space, content, activeSlug, opts = {}) {
   return `<!doctype html>
 <html lang="fr">
 <head>
@@ -905,7 +866,7 @@ function renderShell(content, activeSlug, opts = {}) {
 </head>
 <body data-domain-slug="${escapeHtml(activeSlug || '')}">
   <div class="shell">
-    ${renderSidebar(activeSlug)}
+    ${renderSidebar(space, activeSlug)}
     <div class="content">
       <header class="topbar">
         <button type="button" class="btn sidebar-toggle" id="sidebar-toggle" title="Afficher/masquer le panneau">☰</button>
@@ -935,20 +896,20 @@ function themeChip(domain, theme) {
   );
 }
 
-function renderLabelsZone(domain) {
+function renderLabelsZone(space, domain) {
   const chips = (domain.labels || [])
-    .map((id) => findThemeById(id))
+    .map((id) => findThemeById(space, id))
     .filter(Boolean)
     .map((t) => themeChip(domain, t))
     .join('');
 
-  const attachOptions = themes.length
-    ? themes
+  const attachOptions = space.themes.length
+    ? space.themes
         .map((t) => `<option value="${t.id}">${escapeHtml(t.name)}</option>`)
         .join('')
     : '';
   const attach =
-    themes.length
+    space.themes.length
       ? `<form method="post" action="/domaine/${domain.slug}/api/labels" class="label-attach-form" id="label-attach-form" hidden>
            <input type="hidden" name="action" value="attach">
            <select name="themeId">${attachOptions}</select>
@@ -966,10 +927,10 @@ function renderLabelsZone(domain) {
   );
 }
 
-function renderDomainActions(domain) {
+function renderDomainActions(space, domain) {
   return `<div class="toolbar">
     <button class="btn" hx-post="/domaine/${domain.slug}/api/nodes" hx-target="#outline" hx-swap="outerHTML">+ Nouveau projet</button>
-    ${renderLabelsZone(domain)}
+    ${renderLabelsZone(space, domain)}
     <form method="post" action="/api/domains/${domain.id}/rename" class="inline-form">
       <input name="name" value="${escapeHtml(domain.name)}" class="rename-input" title="Renommer le domaine" aria-label="Nom du domaine">
       <button type="submit" class="btn" title="Renommer">✏️</button>
@@ -980,16 +941,18 @@ function renderDomainActions(domain) {
   </div>`;
 }
 
-function renderPage(domain, expandIds) {
+function renderPage(space, domain, expandIds) {
   return renderShell(
-    renderDomainActions(domain) + renderOutline(domain, domain.slug, expandIds),
+    space,
+    renderDomainActions(space, domain) + renderOutline(domain, domain.slug, expandIds),
     domain.slug,
     { title: domain.name }
   );
 }
 
-function renderEmptyPage() {
+function renderEmptyPage(space) {
   return renderShell(
+    space,
     '<div class="empty-state"><h2>Aucun domaine</h2><p>Créez un domaine dans le panneau de gauche pour regrouper vos projets.</p></div>',
     null,
     { title: 'Mes projets' }
@@ -997,38 +960,90 @@ function renderEmptyPage() {
 }
 
 /* ------------------------------------------------------------------ */
+/* Access routes (public) + protection of everything else              */
+/* ------------------------------------------------------------------ */
+
+const auth = createAuth({
+  authorizedEmails: AUTHORIZED_EMAILS,
+  onAccountReady: async (account, created) => {
+    if (created) {
+      try {
+        const summary = await migration.adoptLegacyData(account.userId);
+        console.log(
+          `[docdoc] espace créé pour ${account.email} : ` +
+            `${summary.domains} domaine(s) et ${summary.archive} archive(s) adoptés` +
+            `${summary.themes ? ', palette reprise' : ''}` +
+            `${summary.imported ? `, ${summary.imported} fichier(s) local(aux) importé(s)` : ''}`
+        );
+      } catch (err) {
+        console.error('[docdoc] adoption des données existantes :', err.message);
+      }
+    }
+    // A fresh session must not be served data cached for another account, or an
+    // earlier state of this one.
+    invalidateSpace(account.userId);
+  },
+});
+
+// The access router owns `/`, `/auth/*`, `/api/me` and `/logout`, and answers
+// unauthenticated requests itself. Everything mounted after the guard below is
+// therefore guaranteed to have an authenticated session and a resolved space.
+app.use(auth.router);
+
+// Resolve the session's space once per request, so no route can read another
+// account's domains or themes.
+async function withSpace(req, res, next) {
+  try {
+    const space = await spaceFor(req.session.userId);
+    space.email = req.session.email || (await accountEmail(req.session.userId));
+    req.space = space;
+    return next();
+  } catch (err) {
+    console.error('[docdoc] chargement de l\u2019espace:', err.message);
+    return res.status(500).send('Espace indisponible');
+  }
+}
+
+async function accountEmail(userId) {
+  const account = await accounts.getAccount(userId);
+  return account ? account.email : '';
+}
+
+app.use(auth.guard, withSpace);
+
+/* ------------------------------------------------------------------ */
 /* Routes                                                              */
 /* ------------------------------------------------------------------ */
 
 app.get('/', (req, res) => {
-  const def = domainList[0];
+  const def = req.space.domainList[0];
   if (!def) {
-    res.type('html').send(renderEmptyPage());
+    res.type('html').send(renderEmptyPage(req.space));
     return;
   }
   res.redirect(302, `/domaine/${def.slug}`);
 });
 
 app.get('/domaine/:slug', (req, res) => {
-  const domain = findDomainBySlug(req.params.slug);
+  const domain = findDomainBySlug(req.space, req.params.slug);
   if (!domain) return res.status(404).send('Domaine introuvable');
-  res.type('html').send(renderPage(domain, expandIdsFor(domain, req)));
+  res.type('html').send(renderPage(req.space, domain, expandIdsFor(domain, req)));
 });
 
 app.get('/domaine/:slug/outline-fragment', (req, res) => {
-  const domain = findDomainBySlug(req.params.slug);
+  const domain = findDomainBySlug(req.space, req.params.slug);
   if (!domain) return res.status(404).send('Domaine introuvable');
   res.type('html').send(renderOutline(domain, domain.slug, expandIdsFor(domain, req)));
 });
 
 app.get('/domaine/:slug/api/outline', (req, res) => {
-  const domain = findDomainBySlug(req.params.slug);
+  const domain = findDomainBySlug(req.space, req.params.slug);
   if (!domain) return res.status(404).json({ error: 'Domaine introuvable' });
   res.json(domain.projects);
 });
 
 function domainFromReq(req, res) {
-  const domain = findDomainBySlug(req.params.slug);
+  const domain = findDomainBySlug(req.space, req.params.slug);
   if (!domain) {
     res.status(404).send('Domaine introuvable');
     return null;
@@ -1042,7 +1057,7 @@ app.post('/domaine/:slug/api/nodes', (req, res) => {
   const parentId = req.body.parentId || null;
   const node = createNode(domain, parentId);
   if (!node) return res.status(404).send('Parent introuvable');
-  persistDomain(domain);
+  persistDomain(req.space, domain);
   res.type('html').send(renderOutline(domain, domain.slug, expandIdsFor(domain, req)));
 });
 
@@ -1054,7 +1069,7 @@ app.post('/domaine/:slug/api/nodes/:id/next', (req, res) => {
   if (!domain) return;
   const node = createNodeAfter(domain, req.params.id);
   if (!node) return res.status(404).send('Noeud introuvable');
-  persistDomain(domain);
+  persistDomain(req.space, domain);
   res.set('X-New-Node-Id', node.id);
   res.type('html').send(renderOutline(domain, domain.slug, expandIdsFor(domain, req)));
 });
@@ -1066,7 +1081,7 @@ app.put('/domaine/:slug/api/nodes/:id', (req, res) => {
   if (!found) return res.status(404).send('Noeud introuvable');
   const title = typeof req.body.title === 'string' ? req.body.title.trim() : '';
   if (title) found.node.title = title;
-  persistDomain(domain);
+  persistDomain(req.space, domain);
   res.json({ ok: true });
 });
 
@@ -1074,7 +1089,7 @@ app.delete('/domaine/:slug/api/nodes/:id', (req, res) => {
   const domain = domainFromReq(req, res);
   if (!domain) return;
   if (!deleteNode(domain, req.params.id)) return res.status(404).send('Noeud introuvable');
-  persistDomain(domain);
+  persistDomain(req.space, domain);
   res.type('html').send(renderOutline(domain, domain.slug, expandIdsFor(domain, req)));
 });
 
@@ -1083,7 +1098,7 @@ app.post('/domaine/:slug/api/nodes/:id/status', (req, res) => {
   if (!domain) return;
   const scope = req.body.scope === 'head' ? 'head' : 'subtree';
   if (!setStatus(domain.projects, req.params.id, req.body.status, scope)) return res.status(400).send('Statut invalide');
-  persistDomain(domain);
+  persistDomain(req.space, domain);
   res.type('html').send(renderOutline(domain, domain.slug, expandIdsFor(domain, req)));
 });
 
@@ -1091,7 +1106,7 @@ app.post('/domaine/:slug/api/nodes/:id/toggle', (req, res) => {
   const domain = domainFromReq(req, res);
   if (!domain) return;
   if (!toggleCollapse(domain.projects, req.params.id)) return res.status(404).send('Noeud introuvable');
-  persistDomain(domain);
+  persistDomain(req.space, domain);
   res.type('html').send(renderOutline(domain, domain.slug, expandIdsFor(domain, req)));
 });
 
@@ -1099,7 +1114,7 @@ app.post('/domaine/:slug/api/nodes/:id/indent', (req, res) => {
   const domain = domainFromReq(req, res);
   if (!domain) return;
   reindentNode(domain, req.params.id, 'indent');
-  persistDomain(domain);
+  persistDomain(req.space, domain);
   res.type('html').send(renderOutline(domain, domain.slug, expandIdsFor(domain, req)));
 });
 
@@ -1107,7 +1122,7 @@ app.post('/domaine/:slug/api/nodes/:id/outdent', (req, res) => {
   const domain = domainFromReq(req, res);
   if (!domain) return;
   reindentNode(domain, req.params.id, 'outdent');
-  persistDomain(domain);
+  persistDomain(req.space, domain);
   res.type('html').send(renderOutline(domain, domain.slug, expandIdsFor(domain, req)));
 });
 
@@ -1121,7 +1136,7 @@ app.post('/domaine/:slug/api/nodes/:id/move', (req, res) => {
     const code = result.error === 'not-found' || result.error === 'target-not-found' ? 404 : 400;
     return res.status(code).send(result.error);
   }
-  persistDomain(domain);
+  persistDomain(req.space, domain);
   res.type('html').send(renderOutline(domain, domain.slug, expandIdsFor(domain, req)));
 });
 
@@ -1132,32 +1147,35 @@ app.post('/domaine/:slug/api/nodes/:id/move', (req, res) => {
 app.post('/api/domains', (req, res) => {
   const name = typeof req.body.name === 'string' ? req.body.name.trim() : '';
   if (!name) return res.status(400).send('Nom requis');
-  const domain = makeDomain(name, []);
-  domains.set(domain.id, domain);
-  rebuildDomainList();
-  persistDomain(domain);
+  const domain = makeDomain(req.space, name, []);
+  req.space.domains.set(domain.id, domain);
+  rebuildDomainList(req.space);
+  persistDomain(req.space, domain);
   res.redirect(302, `/domaine/${domain.slug}`);
 });
 
 app.post('/api/domains/:id/rename', (req, res) => {
-  const domain = findDomainById(req.params.id);
+  const domain = findDomainById(req.space, req.params.id);
   if (!domain) return res.status(404).send('Domaine introuvable');
   const name = typeof req.body.name === 'string' ? req.body.name.trim() : '';
   if (!name) return res.status(400).send('Nom requis');
   domain.name = name;
-  domain.slug = slugify(name, domain.id);
-  rebuildDomainList();
-  persistDomain(domain);
+  domain.slug = slugify(req.space, name, domain.id);
+  rebuildDomainList(req.space);
+  persistDomain(req.space, domain);
   res.redirect(302, `/domaine/${domain.slug}`);
 });
 
 app.post('/api/domains/:id/archive', async (req, res) => {
-  const domain = findDomainById(req.params.id);
+  const domain = findDomainById(req.space, req.params.id);
   if (!domain) return res.status(404).send('Domaine introuvable');
-  await writeQueue;
-  domains.delete(domain.id);
-  rebuildDomainList();
-  await storage.moveObject(domainKey(domain.id), archiveKey(domain.id));
+  await req.space.writeQueue;
+  req.space.domains.delete(domain.id);
+  rebuildDomainList(req.space);
+  await storage.moveObject(
+    storage.domainKey(req.space.userId, domain.id),
+    storage.archiveKey(req.space.userId, domain.id)
+  );
   res.redirect(302, '/');
 });
 
@@ -1168,82 +1186,95 @@ app.post('/api/domains/:id/archive', async (req, res) => {
 app.post('/api/themes', (req, res) => {
   const name = typeof req.body.name === 'string' ? req.body.name.trim() : '';
   if (!name) return res.status(400).send('Nom requis');
-  if (themes.some((t) => t.name === name)) return res.status(400).send('Thème déjà existant');
-  const color = typeof req.body.color === 'string' && req.body.color ? req.body.color : nextThemeColor();
-  themes.push({ id: genId(), name, color });
-  persistThemes();
+  if (req.space.themes.some((t) => t.name === name)) return res.status(400).send('Thème déjà existant');
+  const color = typeof req.body.color === 'string' && req.body.color ? req.body.color : nextThemeColor(req.space);
+  req.space.themes.push({ id: genId(), name, color });
+  persistThemes(req.space);
   res.redirect(302, backTo(req));
 });
 
 app.post('/api/themes/:id/rename', (req, res) => {
-  const theme = findThemeById(req.params.id);
+  const theme = findThemeById(req.space, req.params.id);
   if (!theme) return res.status(404).send('Thème introuvable');
   const name = typeof req.body.name === 'string' ? req.body.name.trim() : '';
   if (!name) return res.status(400).send('Nom requis');
-  if (themes.some((t) => t.id !== theme.id && t.name === name)) {
+  if (req.space.themes.some((t) => t.id !== theme.id && t.name === name)) {
     return res.status(400).send('Thème déjà existant');
   }
   theme.name = name;
   const color = typeof req.body.color === 'string' && req.body.color ? req.body.color : theme.color;
   theme.color = color;
-  persistThemes();
+  persistThemes(req.space);
   res.redirect(302, backTo(req));
 });
 
 app.post('/api/themes/:id/delete', async (req, res) => {
-  const theme = findThemeById(req.params.id);
+  const theme = findThemeById(req.space, req.params.id);
   if (!theme) return res.status(404).send('Thème introuvable');
-  themes = themes.filter((t) => t.id !== theme.id);
+  req.space.themes = req.space.themes.filter((t) => t.id !== theme.id);
   let changed = false;
-  for (const d of domains.values()) {
+  for (const d of req.space.domains.values()) {
     if (d.labels.includes(theme.id)) {
       d.labels = d.labels.filter((id) => id !== theme.id);
       changed = true;
-      persistDomain(d);
+      persistDomain(req.space, d);
     }
   }
-  if (changed) rebuildDomainList();
-  persistThemes();
-  await writeQueue;
+  if (changed) rebuildDomainList(req.space);
+  persistThemes(req.space);
+  await req.space.writeQueue;
   res.redirect(302, backTo(req));
 });
 
 app.post('/domaine/:slug/api/labels', (req, res) => {
-  const domain = findDomainBySlug(req.params.slug);
+  const domain = findDomainBySlug(req.space, req.params.slug);
   if (!domain) return res.status(404).send('Domaine introuvable');
   const action = req.body.action === 'attach' || req.body.action === 'detach' ? req.body.action : null;
   const themeId = typeof req.body.themeId === 'string' ? req.body.themeId : '';
   if (!action || !themeId) return res.status(400).send('Action et thème requis');
 
   if (action === 'attach') {
-    if (!findThemeById(themeId)) return res.status(404).send('Thème introuvable');
+    if (!findThemeById(req.space, themeId)) return res.status(404).send('Thème introuvable');
     if (!domain.labels.includes(themeId)) domain.labels.push(themeId);
   } else {
     domain.labels = domain.labels.filter((id) => id !== themeId);
   }
-  persistDomain(domain);
+  persistDomain(req.space, domain);
   res.redirect(302, `/domaine/${domain.slug}`);
 });
 
 /* ------------------------------------------------------------------ */
 
-storage
-  .ensureBucket()
-  .then(() => loadThemes())
-  .then(() => loadDomains())
-  .then(() => {
+function start() {
+  return storage.ensureBucket().then(() => {
+    mailer.warnIfMisconfigured();
+    if (!passkeys.isConfigured()) {
+      console.warn(
+        '\u26a0 RP_ID / RP_ORIGIN non configurés : les passkeys ne peuvent pas être enregistrées ni utilisées.'
+      );
+    }
     if (storage.isConfigured()) {
       console.log(
-        `Données persistées dans le bucket S3 « ${storage.bucket()} » (${storage.config().endpoint})`
+        `Données persistées dans le bucket S3 « ${storage.bucket()} » (${storage.config().endpoint}), ` +
+          `une arborescence par compte sous users/{userId}/`
       );
     } else {
-      console.warn('S3 non configuré : les données restent en mémoire (non persistées).');
+      console.warn(
+        'S3 non configuré : les données et les comptes restent en mémoire (non persistés).'
+      );
     }
-    app.listen(PORT, () => {
+    console.log(`Comptes autorisés : ${AUTHORIZED_EMAILS.join(', ') || '(aucun)'}`);
+    return app.listen(PORT, () => {
       console.log(`Projets outliner lancé sur http://localhost:${PORT}`);
     });
-  })
-  .catch((err) => {
+  });
+}
+
+if (require.main === module) {
+  start().catch((err) => {
     console.error('Erreur au démarrage:', err);
     process.exit(1);
   });
+}
+
+module.exports = { app, start, spaceFor, invalidateSpace, AUTHORIZED_EMAILS };

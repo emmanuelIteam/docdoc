@@ -11,9 +11,9 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
 # Application code and static assets.
-COPY server.js ./
-COPY storage.js ./
+COPY server.js storage.js accounts.js otp.js mailer.js passkeys.js authpages.js authroutes.js migration.js ./
 COPY public ./public
+COPY scripts ./scripts
 
 # Persistent data directory, writable by the non-root node user so the
 # mounted volume at /app/data stays writable at runtime.
