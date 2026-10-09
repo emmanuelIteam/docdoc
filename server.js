@@ -547,14 +547,14 @@ function reindentNode(domain, id, direction) {
   if (!found) return null;
   const siblings = found.parent ? found.parent.children : projects;
   const node = found.node;
-  // Depths are read from the tree before the hierarchy changes; the moved block
-  // is out of the display order while the insertion point is computed, so its
-  // own (soon to be stale) depth does not matter.
-  const index = indexOutline(projects);
 
   if (direction === 'indent') {
     if (found.index === 0) return node; // no previous sibling -> can't indent
     const prev = siblings[found.index - 1];
+    // Depths are read from the tree before the hierarchy changes; the moved
+    // block is out of the display order while the insertion point is computed,
+    // so its own (soon to be stale) depth does not matter.
+    const index = indexOutline(projects);
     siblings.splice(found.index, 1);
     prev.children.push(node);
     // The node becomes the last child of `prev`: displayed at the end of its
@@ -562,15 +562,15 @@ function reindentNode(domain, id, direction) {
     displayMoveToBlockEnd(domain.displayOrder, index, id, prev.id);
   } else {
     if (!found.parent) return node; // already at root -> can't outdent
-    const parentId = found.parent.id;
-    const sibs = siblings;
-    sibs.splice(found.index, 1);
+    // Outdenting changes the depth only: the node becomes the next sibling of
+    // its former parent in the hierarchy, but the display order is left as it
+    // is, so the line stays exactly where it was — it is not moved above the
+    // lines it followed, right below its former parent's line (see
+    // openspec/changes/reindent-keeps-line-position).
+    siblings.splice(found.index, 1);
     const grandSiblings = found.grandParent ? found.grandParent.children : projects;
     const pIndex = grandSiblings.indexOf(found.parent);
     grandSiblings.splice(pIndex + 1, 0, node);
-    // The node becomes the next sibling of its former parent: displayed right
-    // below that parent's line, before its remaining sub-lines.
-    displayMoveAfter(domain.displayOrder, index, id, parentId);
   }
   return node;
 }

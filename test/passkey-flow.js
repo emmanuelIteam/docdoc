@@ -532,6 +532,81 @@ async function main() {
   assert.match(lineHtml(res.text, n2), /Titre saisi au clavier/);
   ok('réindent : le titre saisi juste avant n\u2019est pas perdu');
 
+  // 13.2 Reindenting changes the depth, not the place in the outline
+  // (see openspec/changes/reindent-keeps-line-position). Build the reported
+  // topology — A on line 1, its sub-lines B1 on line 2 and B2 on line 3 — and
+  // check that outdenting B2 leaves it on line 3, below B1, instead of
+  // displaying it above B1 just under A.
+  res = await call('POST', '/domaine/voyages/api/nodes', { json: { parentId: 'n1' } });
+  assert.strictEqual(res.status, 200);
+  const n3 = outlineLines(res.text)[2].id;
+  assert.deepStrictEqual(outlineLines(res.text), [
+    { id: 'n1', parent: '', depth: 0 },
+    { id: n2, parent: 'n1', depth: 1 },
+    { id: n3, parent: 'n1', depth: 1 },
+  ]);
+
+  // Outdenting B2: it becomes the next sibling of A, but keeps its line.
+  res = await call('POST', '/domaine/voyages/api/nodes/' + n3 + '/outdent', {});
+  assert.strictEqual(res.status, 200);
+  assert.deepStrictEqual(outlineLines(res.text), [
+    { id: 'n1', parent: '', depth: 0 },
+    { id: n2, parent: 'n1', depth: 1 },
+    { id: n3, parent: '', depth: 0 },
+  ]);
+  ok('MAJ+Tab : la ligne reste sur sa ligne, après ses anciens frères');
+
+  // Tab on it: back under A, still on line 3.
+  res = await call('POST', '/domaine/voyages/api/nodes/' + n3 + '/indent', {});
+  assert.strictEqual(res.status, 200);
+  assert.deepStrictEqual(outlineLines(res.text), [
+    { id: 'n1', parent: '', depth: 0 },
+    { id: n2, parent: 'n1', depth: 1 },
+    { id: n3, parent: 'n1', depth: 1 },
+  ]);
+  ok('Tab : la ligne indentée reste sur sa ligne');
+
+  // Outdenting the *first* sub-line must not push it below its former sibling
+  // either: B1 (n2) keeps line 2 and only loses one level.
+  res = await call('POST', '/domaine/voyages/api/nodes/' + n2 + '/outdent', {});
+  assert.strictEqual(res.status, 200);
+  assert.deepStrictEqual(outlineLines(res.text), [
+    { id: 'n1', parent: '', depth: 0 },
+    { id: n2, parent: '', depth: 0 },
+    { id: n3, parent: 'n1', depth: 1 },
+  ]);
+  ok('MAJ+Tab sur le premier enfant : la ligne reste sur sa ligne');
+
+  // An outdented line carries its sub-lines and stays put: n4 is added under
+  // n3, then n3 is outdented — both keep their rows.
+  res = await call('POST', '/domaine/voyages/api/nodes', { json: { parentId: n3 } });
+  assert.strictEqual(res.status, 200);
+  const n4 = outlineLines(res.text)[3].id;
+  assert.deepStrictEqual(outlineLines(res.text), [
+    { id: 'n1', parent: '', depth: 0 },
+    { id: n2, parent: '', depth: 0 },
+    { id: n3, parent: 'n1', depth: 1 },
+    { id: n4, parent: n3, depth: 2 },
+  ]);
+  res = await call('POST', '/domaine/voyages/api/nodes/' + n3 + '/outdent', {});
+  assert.strictEqual(res.status, 200);
+  assert.deepStrictEqual(outlineLines(res.text), [
+    { id: 'n1', parent: '', depth: 0 },
+    { id: n2, parent: '', depth: 0 },
+    { id: n3, parent: '', depth: 0 },
+    { id: n4, parent: n3, depth: 1 },
+  ]);
+  ok('MAJ+Tab : la ligne désindentée emmène son sous-arbre sans bouger');
+
+  // Drop the lines built for this check: the extra lines only existed to
+  // exercise the reindent.
+  res = await call('DELETE', '/domaine/voyages/api/nodes/' + n3, {});
+  assert.strictEqual(res.status, 200);
+  assert.deepStrictEqual(outlineLines(res.text), [
+    { id: 'n1', parent: '', depth: 0 },
+    { id: n2, parent: '', depth: 0 },
+  ]);
+
   // Leave the adopted domain exactly as the fixture defined it: the extra line
   // only existed to exercise the reindent.
   res = await call('DELETE', '/domaine/voyages/api/nodes/' + n2, {});

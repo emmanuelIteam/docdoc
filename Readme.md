@@ -245,16 +245,12 @@ pnpm start
 
 ## Compilation de l'application
 
-```bash
-docker login
-```
-
-emmanuel7044
-
 ## Création et enregistrement de l'image docker
 ```bash
-docker build -t emmanuel7044/docdoc:1.1 .
-docker push emmanuel7044/docdoc:1.1
+docker build -t emmanuel7044/docdoc:1.3 .
+```
+```bash
+docker push emmanuel7044/docdoc:1.3
 ```
 
 > Le tag poussé doit correspondre à `var.app_image` dans `main.tf`

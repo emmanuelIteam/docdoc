@@ -71,6 +71,30 @@ const FIXTURE = {
   displayOrder: ['a', 'c', 'b'],
 };
 
+// The reported topology (openspec/changes/reindent-keeps-line-position): one
+// task A on line 1 with two sub-tasks, B1 on line 2 and B2 on line 3. The caret
+// is put on line 3, and reindenting must leave B2 on line 3.
+const LINES_FIXTURE = {
+  id: DOMAIN_ID,
+  name: 'E2E',
+  slug: 'e2e',
+  order: 0,
+  labels: ['theme-e2e'],
+  projects: [
+    {
+      id: 'a',
+      title: 'Tâche A',
+      status: 'todo',
+      collapsed: false,
+      children: [
+        { id: 'b1', title: 'Tâche B1', status: 'todo', collapsed: false, children: [] },
+        { id: 'b2', title: 'Tâche B2', status: 'todo', collapsed: false, children: [] },
+      ],
+    },
+  ],
+  displayOrder: ['a', 'b1', 'b2'],
+};
+
 fs.writeFileSync(path.join(DATA_DIR, `${DOMAIN_ID}.json`), JSON.stringify(FIXTURE));
 fs.writeFileSync(
   path.join(DATA_DIR, 'themes.json'),
@@ -152,9 +176,13 @@ async function enroll(page) {
 }
 
 // Put the fixture outline back, so each test starts from the same tree.
-async function resetDomain() {
-  await storage.writeJson(storage.domainKey(userId, DOMAIN_ID), FIXTURE);
+async function resetDomainTo(fixture) {
+  await storage.writeJson(storage.domainKey(userId, DOMAIN_ID), fixture);
   invalidateSpace(userId);
+}
+
+async function resetDomain() {
+  await resetDomainTo(FIXTURE);
 }
 
 test.beforeAll(async ({ browser }) => {
@@ -184,6 +212,12 @@ test.beforeEach(resetDomain);
 /* ------------------------------------------------------------------ */
 
 const line = (page, id) => page.locator(`#outline .line[data-id="${id}"]`);
+
+// The id of every displayed line, in display order. The reported defect was an
+// *order* problem (the outdented line was displayed above the lines it
+// followed), so the assertions read the order, not only the depth.
+const rowIds = (page) =>
+  page.locator('#outline .line').evaluateAll((rows) => rows.map((row) => row.dataset.id));
 
 // Open the inline title editor of a line and let the caret settle (the app
 // places it on the next animation frame).
@@ -373,4 +407,69 @@ test('6.9b Entrée crée toujours une ligne sœur, et ses menus fonctionnent', a
   await selectLine(page, newId);
   await line(page, newId).locator('.menu button[title="Terminé"]').click();
   await expect(line(page, newId).locator('.title')).toHaveClass(/status-done/);
+});
+
+/* ------------------------------------------------------------------ */
+/* 4.1 – 4.4: a reindent changes the depth, not the place in the        */
+/* outline (openspec/changes/reindent-keeps-line-position). Before the  */
+/* fix, outdenting B2 displayed it above B1: the line jumped from line  */
+/* 3 to line 2.                                                         */
+/* ------------------------------------------------------------------ */
+
+test('4.1-4.2 MAJ+Tab puis Tab pendant l’édition gardent la ligne sur sa ligne', async ({ page }) => {
+  await resetDomainTo(LINES_FIXTURE);
+  await page.goto(domainPath);
+  expect(await rowIds(page)).toEqual(['a', 'b1', 'b2']);
+
+  await enterEdit(page, 'b2');
+  await page.keyboard.press('Home');
+  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('ArrowRight');
+
+  await page.keyboard.press('Shift+Tab');
+
+  await expect(line(page, 'b2')).toHaveAttribute('data-depth', '0');
+  await expect(line(page, 'b2')).toHaveAttribute('data-parent', '');
+  expect(await rowIds(page)).toEqual(['a', 'b1', 'b2']);
+  const reopened = line(page, 'b2').locator('.title-input');
+  await expect(reopened).toBeFocused();
+  await expect.poll(() => reopened.evaluate((el) => el.selectionStart)).toBe(2);
+
+  await page.keyboard.press('Tab');
+
+  await expect(line(page, 'b2')).toHaveAttribute('data-depth', '1');
+  await expect(line(page, 'b2')).toHaveAttribute('data-parent', 'a');
+  expect(await rowIds(page)).toEqual(['a', 'b1', 'b2']);
+  await expect(line(page, 'b2').locator('.title-input')).toBeFocused();
+});
+
+test('4.3 MAJ+Tab puis Tab sur une ligne sélectionnée gardent la ligne', async ({ page }) => {
+  await resetDomainTo(LINES_FIXTURE);
+  await page.goto(domainPath);
+  await selectLine(page, 'b2');
+
+  await page.keyboard.press('Shift+Tab');
+
+  await expect(line(page, 'b2')).toHaveAttribute('data-depth', '0');
+  await expect(line(page, 'b2')).toHaveClass(/selected-head/);
+  expect(await rowIds(page)).toEqual(['a', 'b1', 'b2']);
+
+  await page.keyboard.press('Tab');
+
+  await expect(line(page, 'b2')).toHaveAttribute('data-depth', '1');
+  await expect(line(page, 'b2')).toHaveAttribute('data-parent', 'a');
+  await expect(line(page, 'b2')).toHaveClass(/selected-head/);
+  expect(await rowIds(page)).toEqual(['a', 'b1', 'b2']);
+});
+
+test('4.4 le bouton « ← » du menu garde la ligne sur sa ligne', async ({ page }) => {
+  await resetDomainTo(LINES_FIXTURE);
+  await page.goto(domainPath);
+  await selectLine(page, 'b2');
+
+  await line(page, 'b2').locator('.menu button[title="Désindenter"]').click();
+
+  await expect(line(page, 'b2')).toHaveAttribute('data-depth', '0');
+  await expect(line(page, 'b2')).toHaveAttribute('data-parent', '');
+  expect(await rowIds(page)).toEqual(['a', 'b1', 'b2']);
 });

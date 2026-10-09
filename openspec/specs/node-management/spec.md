@@ -30,7 +30,7 @@ The system SHALL allow the user to edit the title of an existing node.
 - **THEN** the edit field opens with the caret at the position of the click within the title, and the title is not selected
 
 ### Requirement: Reindent a node
-The system SHALL allow the user to move a node up or down one level in the hierarchy, through the line's indent/outdent context-menu actions as well as through the keyboard shortcuts `Tab` (indent) and `Shift+Tab` (outdent) applied to the current line.
+The system SHALL allow the user to move a node up or down one level in the hierarchy, through the line's indent/outdent context-menu actions as well as through the keyboard shortcuts `Tab` (indent) and `Shift+Tab` (outdent) applied to the current line. Reindenting SHALL NOT reorder the outline: outdenting a node SHALL change its depth only and SHALL leave the node displayed at the position it already occupied — it SHALL NOT be displayed above the lines it followed; indenting a node SHALL make it the last child of its previous sibling and display it at the end of that sibling's block, never above that sibling.
 
 #### Scenario: Indent a node
 - **WHEN** the user indents a node
@@ -39,6 +39,18 @@ The system SHALL allow the user to move a node up or down one level in the hiera
 #### Scenario: Outdent a node
 - **WHEN** the user outdents a node
 - **THEN** the node moves up one level and becomes a sibling of its former parent
+
+#### Scenario: Outdenting a line leaves it where it is
+- **WHEN** the user outdents a line that is displayed after other lines of its former parent, with `Shift+Tab` or with the line's outdent menu action
+- **THEN** the line is outdented one level and stays displayed at the same position, after the lines it followed: it is not moved above them
+
+#### Scenario: Indenting a line leaves it where it is under a leaf previous sibling
+- **WHEN** the user indents a line whose previous sibling has no sub-line
+- **THEN** the line becomes that sibling's child, is indented one level, and stays displayed at the same position
+
+#### Scenario: Reindenting keeps the line on its line
+- **WHEN** the outline shows a task A on line 1 with two sub-tasks B1 on line 2 and B2 on line 3, the caret is on line 3, and the user presses `Shift+Tab` and then `Tab`
+- **THEN** B2 loses one level and then gains it back, while remaining on line 3 after each of the two keystrokes
 
 #### Scenario: Tab indents the line being edited
 - **WHEN** the user is editing a line's title and presses Tab
