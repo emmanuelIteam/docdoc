@@ -46,6 +46,11 @@ function authShell(title, body, opts = {}) {
 
 const CLIENT_SCRIPTS = ['/simplewebauthn.js', '/auth.js'];
 
+// Pre-filled in the signup form so the sole owner of this instance does not
+// retype it on every enrollment. Still fully editable, and a value submitted
+// with the form (including an empty one) always wins over this default.
+const DEFAULT_SIGNUP_EMAIL = 'emmanuel.grandiere@laposte.net';
+
 // Shown whenever a request arrives without an authenticated session. The
 // browser has no session, which is all the server can know: it must therefore
 // offer both doors, because a returning user on a new browser has a space and
@@ -69,6 +74,7 @@ function renderHome(options = {}) {
 }
 
 function renderEmailForm(options = {}) {
+  const value = options.value === undefined ? DEFAULT_SIGNUP_EMAIL : options.value;
   return authShell(
     'Créer un compte',
     `<form method="post" action="/auth/email" class="auth-card">
@@ -77,7 +83,7 @@ function renderEmailForm(options = {}) {
       ${alert('error', options.error)}
       <label for="email">Adresse email</label>
       <input id="email" name="email" type="email" required autocomplete="email" autofocus
-             value="${escapeHtml(options.value || '')}">
+             value="${escapeHtml(value || '')}">
       <button class="btn primary" type="submit">Recevoir un code</button>
       <a class="auth-link" href="/">Retour</a>
     </form>`
@@ -86,11 +92,19 @@ function renderEmailForm(options = {}) {
 
 function renderCodeForm(options = {}) {
   const email = escapeHtml(options.email || '');
+  // Say where the code actually went. In development mode no email is sent —
+  // it is written to the server's log — and claiming otherwise sends the user
+  // looking in an inbox that will never receive anything.
+  const where =
+    options.delivery === 'log'
+      ? `Le code n'est pas envoyé par email (mode développement) : il est écrit dans les
+         journaux du serveur, sous la forme <code>[docdoc][dev] code pour … : 123456</code>.`
+      : `Un code à 6 chiffres a été envoyé à <strong>${email}</strong>. Il ne peut être utilisé qu'une fois.`;
   return authShell(
     'Saisir le code',
     `<form method="post" action="/auth/email/verify" class="auth-card">
       <h2>Saisir le code</h2>
-      <p>Un code à 6 chiffres a été envoyé à <strong>${email}</strong>. Il ne peut être utilisé qu'une fois.</p>
+      <p>${where}</p>
       ${alert('error', options.error)}
       ${alert('notice', options.notice)}
       <label for="code">Code</label>

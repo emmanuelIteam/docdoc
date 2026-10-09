@@ -13,6 +13,9 @@
 // The address defaults to the first entry of AUTHORIZED_EMAILS. The command is
 // idempotent: running it again finds the account and nothing left to adopt.
 
+// Same `.env` handling as the server, before anything reads the environment.
+require('../env');
+
 const accounts = require('../accounts');
 const migration = require('../migration');
 const storage = require('../storage');

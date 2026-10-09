@@ -82,8 +82,13 @@ function createAuth(options) {
   }
 
   function codeForm(res, status, fields) {
-    const { status: code, html } = page(status, pages.renderCodeForm(fields || {}));
-    res.status(code).type('html').send(html);
+    // The form is told where the code actually went, so a development run does
+    // not promise an email that was never sent.
+    const html = pages.renderCodeForm({
+      delivery: mailer.isDevMode() ? 'log' : 'email',
+      ...fields,
+    });
+    res.status(status).type('html').send(html);
   }
 
   function enrollmentPage(res, status, fields) {
@@ -246,11 +251,17 @@ function createAuth(options) {
   /* --- Enrollment step 3: the passkey ------------------------------- */
 
   router.post('/auth/passkey/register/options', guardRegistration, async (req, res) => {
+    let rp;
+    try {
+      rp = passkeys.relyingParty(req);
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
     try {
       if (signedIn(req)) {
         const account = await accounts.getAccount(req.session.userId);
         if (!account) return res.status(401).json({ error: 'Compte introuvable.' });
-        const options = await passkeys.registrationOptions(account, account.email);
+        const options = await passkeys.registrationOptions(rp, account, account.email);
         putCeremony(req, 'registration', options.challenge);
         return res.json(options);
       }
@@ -263,7 +274,7 @@ function createAuth(options) {
       // otherwise present the provisional handle decided at code verification.
       const existing = await accounts.getAccountByEmail(pending.email);
       const context = existing || { userId: pending.userId, passkeys: [] };
-      const options = await passkeys.registrationOptions(context, pending.email);
+      const options = await passkeys.registrationOptions(rp, context, pending.email);
       putCeremony(req, 'registration', options.challenge);
       return res.json(options);
     } catch (err) {
@@ -280,7 +291,11 @@ function createAuth(options) {
 
     let credential;
     try {
-      credential = await passkeys.verifyRegistration(req.body, ceremony.challenge);
+      credential = await passkeys.verifyRegistration(
+        passkeys.relyingParty(req),
+        req.body,
+        ceremony.challenge
+      );
     } catch (err) {
       console.error('[docdoc] vérification d\u2019attestation:', err.message);
       return res.status(400).json({ error: "L'enregistrement de la passkey a échoué." });
@@ -326,12 +341,18 @@ function createAuth(options) {
   /* --- Sign-in with a passkey --------------------------------------- */
 
   router.post('/auth/passkey/login/options', async (req, res) => {
+    let rp;
+    try {
+      rp = passkeys.relyingParty(req);
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
     try {
       const email = normalizeEmail(req.body && req.body.email);
       // With an address, only that account's passkeys are acceptable; without
       // one, the browser offers the discoverable passkeys it holds.
       const account = email ? await accounts.getAccountByEmail(email) : null;
-      const options = await passkeys.authenticationOptions(account);
+      const options = await passkeys.authenticationOptions(rp, account);
       putCeremony(req, 'authentication', options.challenge);
       return res.json(options);
     } catch (err) {
@@ -354,7 +375,12 @@ function createAuth(options) {
       const passkey = accounts.findPasskey(account, credentialId);
       if (!passkey) return res.status(401).json({ error: 'Passkey inconnue.' });
 
-      const result = await passkeys.verifyAuthentication(req.body, ceremony.challenge, passkey);
+      const result = await passkeys.verifyAuthentication(
+        passkeys.relyingParty(req),
+        req.body,
+        ceremony.challenge,
+        passkey
+      );
       if (!result) return res.status(401).json({ error: 'Connexion refusée.' });
 
       if (result.counterAnomaly) {

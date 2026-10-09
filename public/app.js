@@ -20,6 +20,24 @@ function reloadOutline() {
   }
 }
 
+// Replace the outline with a server-rendered fragment. Assigning `outerHTML`
+// inserts markup htmx knows nothing about: it does not watch the DOM, so
+// without an explicit `htmx.process(...)` none of the new outline's `hx-*`
+// attributes are bound and the whole context menu (statuses, indent/outdent,
+// add a task, delete) is inert. Returns the fresh outline, or null when the
+// page had no outline and was reloaded instead.
+function swapOutlineHtml(html) {
+  const outlineEl = document.querySelector('#outline');
+  if (!outlineEl) {
+    location.reload();
+    return null;
+  }
+  outlineEl.outerHTML = html;
+  const fresh = document.querySelector('#outline');
+  if (window.htmx && fresh) htmx.process(fresh);
+  return fresh;
+}
+
 /* -------------------------------------------------------------------- */
 /* Flat outline helpers.                                                 */
 /* The outline is rendered as a flat sequence of .line elements, each     */
@@ -67,6 +85,36 @@ function subtreeRows(line) {
   return rows;
 }
 
+// The displayed previous sibling of a line: the nearest preceding line of the
+// outline sharing the same parent (data-parent). Siblings are not necessarily
+// adjacent in the flat rendering — a line inserted below X is displayed before
+// X's own sub-lines — so the search walks backwards instead of looking at the
+// immediate predecessor. It stops at the first line shallower than `line`
+// (its parent, which closes the parent's region). Returns null when the line is
+// the first of its siblings, which is exactly when indenting is impossible.
+function previousSiblingRow(line) {
+  if (!line) return null;
+  const parent = line.dataset.parent || '';
+  const depth = depthOf(line);
+  for (let el = line.previousElementSibling; el; el = el.previousElementSibling) {
+    if (!el.classList || !el.classList.contains('line')) continue;
+    if (depthOf(el) < depth) break;
+    if ((el.dataset.parent || '') === parent) return el;
+  }
+  return null;
+}
+
+// Whether the indent/outdent shortcut can move the line one level. This mirrors
+// `reindentNode` on the server: indenting needs a previous sibling, outdenting
+// needs a parent. It is decided here so an impossible reindent sends no request
+// at all — a pointless round-trip would re-render the outline and drop the
+// caret for nothing. The server keeps the last word either way.
+function canReindent(line, direction) {
+  if (!line) return false;
+  if (direction === 'outdent') return Boolean(line.dataset.parent);
+  return previousSiblingRow(line) !== null;
+}
+
 // Scope of a status action, resolved from the live selection: the status
 // cascades to the whole displayed subtree when one of the head line's sub-lines
 // is selected, and applies to the head line alone otherwise. Called from the
@@ -98,10 +146,12 @@ function caretOffsetAtPoint(span, x, y) {
   return offset;
 }
 
-function startRename(span, clientX, clientY, forceEnd, selectAll) {
+function startRename(span, clientX, clientY, forceEnd, selectAll, caretAt) {
   const id = span.dataset.id;
   const original = span.textContent;
   let done = false;
+  // Caret offset to restore after a keyboard reindent reopened this field.
+  let reindentCaret = original.length;
 
   // Determine where in the title the user clicked so the edit field opens with
   // the caret at that exact position (no "select-all"). When the rename is
@@ -113,6 +163,9 @@ function startRename(span, clientX, clientY, forceEnd, selectAll) {
     const hit = caretOffsetAtPoint(span, clientX, clientY);
     if (hit !== null) caret = Math.max(0, Math.min(hit, original.length));
   }
+  // An explicit offset (the reindent path) wins: the title may have been
+  // retyped since the click that opened the field.
+  if (Number.isFinite(caretAt)) caret = Math.max(0, Math.min(caretAt, original.length));
 
   const input = document.createElement('input');
   input.type = 'text';
@@ -137,7 +190,7 @@ function startRename(span, clientX, clientY, forceEnd, selectAll) {
   sizeInput();
   input.addEventListener('input', sizeInput);
 
-  const finish = async (save, next) => {
+  const finish = async (save, next, reindent) => {
     if (done) return;
     done = true;
 
@@ -165,6 +218,30 @@ function startRename(span, clientX, clientY, forceEnd, selectAll) {
       }
     }
 
+    // Tab / Shift+Tab: move the line one level, then reopen the edit field on
+    // the same line at the same caret so the shortcut can be chained. The title
+    // was saved just above, so the re-rendered outline carries the typed text:
+    // nothing the user typed is lost. The two requests are sequential — the PUT
+    // must land before the reindent re-renders the outline.
+    if (reindent) {
+      try {
+        const res = await fetch(domainPath('/api/nodes/' + id + '/' + reindent), { method: 'POST' });
+        if (!res.ok) throw new Error('Réindentation refusée (' + res.status + ')');
+        const html = await res.text();
+        // No outline: the page is reloading itself, nothing more to do here.
+        if (!swapOutlineHtml(html)) return;
+        const line = document.querySelector('.line[data-id="' + id + '"]');
+        const titleEl = line && line.querySelector('.title');
+        if (titleEl) startRename(titleEl, 0, 0, false, false, reindentCaret);
+        // No line: the reindent moved it under a collapsed parent, so it is
+        // legitimately hidden now (the outline itself is up to date).
+      } catch (err) {
+        console.error('Erreur réindentation:', err);
+        reloadOutline();
+      }
+      return;
+    }
+
     // Enter: create a new line at the same level, right after this one, and
     // focus it so the user can keep typing.
     if (next) {
@@ -173,16 +250,11 @@ function startRename(span, clientX, clientY, forceEnd, selectAll) {
         if (!res.ok) throw new Error('Création de ligne refusée (' + res.status + ')');
         const newId = res.headers.get('X-New-Node-Id');
         const html = await res.text();
-        const outlineEl = document.querySelector('#outline');
-        if (outlineEl) {
-          outlineEl.outerHTML = html;
-          if (newId) {
-            const newLine = document.querySelector('.line[data-id="' + newId + '"]');
-            const newTitle = newLine && newLine.querySelector('.title');
-            if (newTitle) startRename(newTitle, 0, 0, true, true);
-          }
-        } else {
-          location.reload();
+        if (!swapOutlineHtml(html)) return;
+        if (newId) {
+          const newLine = document.querySelector('.line[data-id="' + newId + '"]');
+          const newTitle = newLine && newLine.querySelector('.title');
+          if (newTitle) startRename(newTitle, 0, 0, true, true);
         }
       } catch (err) {
         console.error('Erreur création ligne:', err);
@@ -201,6 +273,22 @@ function startRename(span, clientX, clientY, forceEnd, selectAll) {
       finish(true, true);
     } else if (e.key === 'Escape') {
       finish(false);
+    } else if (e.key === 'Tab' && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      // Tab indents the line being edited, Shift+Tab outdents it. The default
+      // is always prevented: otherwise Tab would blur the field and commit the
+      // line, the opposite of what an outliner user expects. Modifier
+      // combinations keep their browser meaning (Ctrl+Tab switches tabs).
+      e.preventDefault();
+      // The event must not reach the document listener below: `finish` removes
+      // this field synchronously, so by the time the event bubbles the focus is
+      // back on <body> and a selected line would be reindented a second time.
+      e.stopPropagation();
+      const direction = e.shiftKey ? 'outdent' : 'indent';
+      // The span is detached by now, so the line is resolved from the field.
+      const line = input.closest('.line');
+      if (!canReindent(line, direction)) return; // impossible: stay put, silently
+      reindentCaret = input.selectionStart === null ? original.length : input.selectionStart;
+      finish(true, false, direction);
     }
   });
   input.addEventListener('blur', () => finish(true));
@@ -275,6 +363,70 @@ document.addEventListener('click', (e) => {
   }
 });
 
+// Re-apply the head selection after the outline was replaced by a
+// server-rendered fragment: the selection lives in the DOM, which the fragment
+// wipes out, so it is captured before the request and put back here. The
+// selection button is focused again too, so the shortcut can be pressed a
+// second time without another click.
+function restoreHeadSelection(line, groupSelected) {
+  document.querySelectorAll('.line.selected, .line.selected-head').forEach((l) => {
+    l.classList.remove('selected');
+    l.classList.remove('selected-head');
+  });
+  const targets = groupSelected ? [line, ...subtreeRows(line)] : [line];
+  targets.forEach((l) => l.classList.add('selected'));
+  line.classList.add('selected-head');
+  const bullet = line.querySelector('.bullet');
+  if (bullet) bullet.focus();
+}
+
+// Tab / Shift+Tab on a selected line (not being edited). The title edit field
+// has its own handler: this one only runs when no field owns the focus, which
+// is exactly the "line selected, not editing" context. Everything else keeps
+// the browser's normal tab navigation, and a line is never touched from outside
+// the outline.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Tab' || e.ctrlKey || e.altKey || e.metaKey) return;
+  const focused = document.activeElement;
+  if (focused && focused.closest && focused.closest('input, textarea, select, [contenteditable]')) {
+    return;
+  }
+  // An open title field owns Tab, even if it is not the focused element any
+  // more: reindenting here as well would move the line twice.
+  if (document.querySelector('.title-input')) return;
+  const outline = document.querySelector('#outline');
+  const line = outline && outline.querySelector('.line.selected-head');
+  if (!line || !line.dataset.id) return;
+
+  const direction = e.shiftKey ? 'outdent' : 'indent';
+  // The focus never moves, even when the reindent is impossible: Tab is ours
+  // here, it does not mean "next control".
+  e.preventDefault();
+  if (!canReindent(line, direction)) return;
+
+  const id = line.dataset.id;
+  // Whether the head line's sub-lines are selected (the group state) must
+  // survive the re-render as well.
+  const groupSelected = subtreeRows(line).some((row) => row.classList.contains('selected'));
+
+  fetch(domainPath('/api/nodes/' + id + '/' + direction), { method: 'POST' })
+    .then((res) => {
+      if (!res.ok) throw new Error('Réindentation refusée (' + res.status + ')');
+      return res.text();
+    })
+    .then((html) => {
+      if (!swapOutlineHtml(html)) return;
+      const moved = document.querySelector('.line[data-id="' + id + '"]');
+      // No line: the reindent moved it under a collapsed parent, so it is
+      // legitimately hidden now (the outline itself is up to date).
+      if (moved) restoreHeadSelection(moved, groupSelected);
+    })
+    .catch((err) => {
+      console.error('Erreur réindentation:', err);
+      reloadOutline();
+    });
+});
+
 // Close the context menu (and clear the selection) when the pointer leaves the
 // selected head line. The menu is a child of the line and is anchored above it,
 // so moving between the line and its menu (or across the menu's hover-bridge)
@@ -283,6 +435,11 @@ document.addEventListener('click', (e) => {
 document.addEventListener('mouseout', (e) => {
   const head = e.target.closest('.line.selected-head');
   if (!head) return;
+  // Re-rendering the outline removes the line the pointer was on, which makes
+  // the browser report the pointer leaving *that* (now detached) line. The user
+  // did not move: the selection that the re-render just restored must survive,
+  // otherwise the context menu closes by itself.
+  if (!head.isConnected) return;
   const to = e.relatedTarget;
   // Still inside the line (a sub-element, the menu, or its hover-bridge).
   if (to && head.contains(to)) return;

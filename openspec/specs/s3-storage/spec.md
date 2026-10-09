@@ -37,16 +37,20 @@ The system SHALL read and write objects as JSON under a given key in the configu
 - **THEN** the parsed JSON is returned, or null when the object does not exist or cannot be parsed
 
 ### Requirement: List objects by prefix
-The system SHALL list the object keys under a given prefix for domain enumeration.
+The system SHALL list the object keys under a given prefix, so that a listing can be confined to the authenticated account's space.
 
 #### Scenario: List objects under the domains prefix
-- **WHEN** domains are enumerated
-- **THEN** the keys under the `domains/` prefix are returned
+- **WHEN** an account's domains are enumerated
+- **THEN** the keys under that account's domains prefix are returned and no key belonging to another account appears
+
+#### Scenario: A listing never returns another account's keys
+- **WHEN** a listing is performed for an account
+- **THEN** keys stored outside that account's prefix are not returned
 
 ### Requirement: Move an object
-The system SHALL move an object from a source key to a destination key (copy then delete) for archive operations.
+The system SHALL move an object from a source key to a destination key (copy then delete) for archive operations, where both keys belong to the authenticated account's space.
 
 #### Scenario: Archive moves an object to the archive prefix
 - **WHEN** a domain is archived
-- **THEN** its object is moved from `domains/{id}.json` to `archive/{id}.json`
+- **THEN** its object is moved from the account's domains prefix to the account's archive prefix
 

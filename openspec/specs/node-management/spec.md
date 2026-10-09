@@ -30,7 +30,7 @@ The system SHALL allow the user to edit the title of an existing node.
 - **THEN** the edit field opens with the caret at the position of the click within the title, and the title is not selected
 
 ### Requirement: Reindent a node
-The system SHALL allow the user to move a node up or down one level in the hierarchy.
+The system SHALL allow the user to move a node up or down one level in the hierarchy, through the line's indent/outdent context-menu actions as well as through the keyboard shortcuts `Tab` (indent) and `Shift+Tab` (outdent) applied to the current line.
 
 #### Scenario: Indent a node
 - **WHEN** the user indents a node
@@ -39,6 +39,42 @@ The system SHALL allow the user to move a node up or down one level in the hiera
 #### Scenario: Outdent a node
 - **WHEN** the user outdents a node
 - **THEN** the node moves up one level and becomes a sibling of its former parent
+
+#### Scenario: Tab indents the line being edited
+- **WHEN** the user is editing a line's title and presses Tab
+- **THEN** that line is indented one level, the browser's default focus move is prevented, and the edit field stays open on that same line
+
+#### Scenario: Shift+Tab outdents the line being edited
+- **WHEN** the user is editing a line's title and presses Shift+Tab
+- **THEN** that line is outdented one level, the browser's default focus move is prevented, and the edit field stays open on that same line
+
+#### Scenario: Tab indents a selected line
+- **WHEN** a line is selected and is not being edited, and the user presses Tab
+- **THEN** that line is indented one level and stays selected
+
+#### Scenario: Shift+Tab outdents a selected line
+- **WHEN** a line is selected and is not being edited, and the user presses Shift+Tab
+- **THEN** that line is outdented one level and stays selected
+
+#### Scenario: The typed title survives a keyboard reindent
+- **WHEN** the user presses Tab or Shift+Tab while a line's title has been modified in the edit field but not yet committed
+- **THEN** the modified title is saved, and the edit field reopens on the same line with the caret at the same position
+
+#### Scenario: Keyboard reindent can be repeated
+- **WHEN** the user presses Tab twice in a row on the same line, having a previous sibling whose own previous sibling also exists
+- **THEN** the line is indented two levels, and the editing or selection context is still active on that line
+
+#### Scenario: Indenting the first child does nothing
+- **WHEN** the user presses Tab on a line that has no previous sibling
+- **THEN** nothing happens: no request is sent, the hierarchy is unchanged, and the line stays in its current editing or selection state
+
+#### Scenario: Outdenting a top-level line does nothing
+- **WHEN** the user presses Shift+Tab on a line that is already at the top level
+- **THEN** nothing happens: no request is sent, the hierarchy is unchanged, and the line stays in its current editing or selection state
+
+#### Scenario: Tab keeps its normal meaning outside an outline line
+- **WHEN** the user presses Tab while the focus is in a field that is not an outline line (such as a sidebar or theme form field), or presses Tab with Ctrl, Alt, or Meta held
+- **THEN** the browser's normal tab navigation applies and no line is reindented
 
 ### Requirement: Delete a node
 The system SHALL allow the user to delete a node together with all of its descendants.
@@ -96,4 +132,32 @@ The system SHALL scope create, rename, reindent, delete, and move operations to 
 #### Scenario: Move within the active domain
 - **WHEN** the user moves a node on a domain page
 - **THEN** the node is reordered within that domain's outline only
+
+### Requirement: Insert a line directly below the current line when pressing Enter
+
+Le système SHALL, quand l'utilisateur appuie sur Entrée pendant l'édition en ligne du titre d'une ligne avec le curseur en fin de texte, enregistrer la modification éventuelle du titre, créer une nouvelle ligne **au même niveau** que la ligne éditée, l'afficher **immédiatement sous la ligne éditée et au-dessus de ses sous-lignes** — que la ligne éditée ait ou non des sous-lignes — puis ouvrir cette nouvelle ligne en édition avec son texte d'attente sélectionné afin que l'utilisateur puisse continuer à saisir.
+
+#### Scenario: Entrée en fin de ligne avec sous-lignes dépliées
+- **WHEN** l'utilisateur place le curseur en fin de texte d'une ligne X qui a des sous-lignes dépliées et appuie sur Entrée
+- **THEN** une nouvelle ligne de même niveau que X est créée et affichée juste sous la ligne X, au-dessus des sous-lignes de X
+
+#### Scenario: Entrée en fin de ligne avec sous-lignes repliées
+- **WHEN** l'utilisateur appuie sur Entrée en fin de texte d'une ligne X repliée qui a des sous-lignes
+- **THEN** la nouvelle ligne est affichée juste sous la ligne X, au même niveau, et les sous-lignes de X restent repliées
+
+#### Scenario: Entrée en fin de ligne sans sous-ligne
+- **WHEN** l'utilisateur appuie sur Entrée en fin de texte d'une ligne sans sous-ligne
+- **THEN** la nouvelle ligne est affichée juste sous cette ligne, au même niveau
+
+#### Scenario: La saisie se poursuit sur la nouvelle ligne
+- **WHEN** la nouvelle ligne est créée
+- **THEN** elle est ouverte en édition avec son texte d'attente sélectionné, et un nouvel appui sur Entrée crée la ligne suivante juste en dessous d'elle
+
+#### Scenario: Entrée au milieu du texte conserve la création au même niveau
+- **WHEN** l'utilisateur appuie sur Entrée alors que le curseur n'est pas en fin de texte
+- **THEN** une ligne de même niveau est créée et affichée juste sous la ligne éditée, au-dessus de ses sous-lignes (aucun découpage du titre)
+
+#### Scenario: La modification du titre est enregistrée avant la création
+- **WHEN** l'utilisateur modifie le texte de la ligne puis appuie sur Entrée
+- **THEN** le titre modifié est enregistré et la nouvelle ligne est créée juste sous la ligne éditée
 

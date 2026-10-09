@@ -38,6 +38,7 @@
 - [x] 4.6 Implémenter le renvoi, avec invalidation du code précédent et délai de garde
 - [x] 4.7 Limiter le nombre d'essais par code et le débit des demandes par adresse et par client
 - [x] 4.8 Traiter un échec du fournisseur d'email sans arrêter le serveur
+- [x] 4.9 Ajouter un fournisseur `smtp` générique (`nodemailer`) et un catcher Mailpit local dans `docker-compose.yml`, pour dérouler le parcours avec de vrais emails sans compte ni domaine authentifié
 
 ## 5. Cérémonies WebAuthn
 
@@ -104,6 +105,8 @@
 - [x] 11.7 Vérifier qu'une session expirée n'injecte pas la page d'accueil dans une cible htmx
 - [x] 11.8 Vérifier que le mode développement n'est pas actif en production
 - [x] 11.9 Exécuter `openspec validate passkey-auth --strict`
+- [x] 11.10 Vérifier l'envoi réel par SMTP : destinataire, expéditeur, code extrait du message transmis et réutilisé pour terminer l'enrôlement
+- [ ] 11.11 Vérifier le montage Mailpit avec `docker compose config` puis `docker compose up -d`, et lire un code dans l'interface http://localhost:8025 — *à faire sur une machine où Docker est accessible (bloqué dans l'environnement de développement utilisé : accès refusé au named pipe Docker)*
 
 ## 12. Déploiement et documentation
 

@@ -53,6 +53,8 @@ process.env.NODE_ENV = 'development';
 process.env.AUTHORIZED_EMAILS = AUTHORIZED;
 process.env.EMAIL_PROVIDER = 'dev';
 process.env.DOCDOC_DATA_DIR = FIXTURE_DIR;
+// A developer's local `.env` must not leak into the test.
+process.env.DOCDOC_ENV_FILE = path.join(FIXTURE_DIR, 'absent.env');
 for (const key of ['S3_ENDPOINT', 'S3_BUCKET', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY']) {
   delete process.env[key];
 }
@@ -71,6 +73,7 @@ console.log = (...args) => {
 const { start } = require('../server');
 const storage = require('../storage');
 const accounts = require('../accounts');
+const passkeys = require('../passkeys');
 
 /* ------------------------------------------------------------------ */
 /* Minimal CBOR encoder, enough for an attestation object              */
@@ -196,6 +199,100 @@ function assertionResponse(authenticator, challenge, counter, userHandle) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Minimal SMTP server, to exercise the smtp provider for real          */
+/* ------------------------------------------------------------------ */
+
+// Docker is not available in every environment, so the SMTP path — the one the
+// local Mailpit catcher uses — is verified against a server speaking just enough
+// ESMTP for nodemailer: greeting, EHLO, MAIL FROM, RCPT TO, DATA.
+function startFakeSmtp() {
+  const net = require('net');
+  const messages = [];
+  return new Promise((resolve) => {
+    const server = net.createServer((socket) => {
+      let buffer = '';
+      let inData = false;
+      let body = '';
+      let recipients = [];
+      socket.write('220 docdoc-test ESMTP\r\n');
+      socket.on('data', (chunk) => {
+        buffer += chunk.toString('utf8');
+        let index;
+        while ((index = buffer.indexOf('\r\n')) !== -1) {
+          const line = buffer.slice(0, index);
+          buffer = buffer.slice(index + 2);
+
+          if (inData) {
+            if (line === '.') {
+              inData = false;
+              messages.push({ data: body, recipients: recipients.join(', ') });
+              socket.write('250 OK\r\n');
+            } else {
+              body += `${line}\n`;
+            }
+            continue;
+          }
+
+          const upper = line.toUpperCase();
+          if (upper.startsWith('EHLO') || upper.startsWith('HELO')) {
+            socket.write('250-docdoc-test\r\n250-SIZE 10485760\r\n250 8BITMIME\r\n');
+          } else if (upper.startsWith('MAIL FROM')) {
+            recipients = [];
+            socket.write('250 OK\r\n');
+          } else if (upper.startsWith('RCPT TO')) {
+            recipients.push(line.slice(line.indexOf(':') + 1).trim());
+            socket.write('250 OK\r\n');
+          } else if (upper.startsWith('DATA')) {
+            inData = true;
+            body = '';
+            socket.write('354 End data with <CR><LF>.<CR><LF>\r\n');
+          } else if (upper.startsWith('QUIT')) {
+            socket.write('221 Bye\r\n');
+            socket.end();
+          } else {
+            socket.write('250 OK\r\n');
+          }
+        }
+      });
+      socket.on('error', () => {});
+    });
+    server.listen(0, '127.0.0.1', () => {
+      resolve({
+        port: server.address().port,
+        messages,
+        close: () => server.close(),
+      });
+    });
+  });
+}
+
+// MIME transfer encoding wraps long lines and escapes bytes as `=XX`. Decoding
+// the escapes byte by byte and reading the result as UTF-8 is what makes accents
+// readable again — otherwise `=C3=A8` (è) stays two Latin-1 characters.
+function decodeQuotedPrintable(input) {
+  const unfolded = input.replace(/=\r?\n/g, '');
+  const bytes = [];
+  for (let i = 0; i < unfolded.length; i++) {
+    if (unfolded[i] === '=' && /^[0-9A-Fa-f]{2}$/.test(unfolded.slice(i + 1, i + 3))) {
+      bytes.push(Number.parseInt(unfolded.slice(i + 1, i + 3), 16));
+      i += 2;
+    } else {
+      bytes.push(unfolded.charCodeAt(i) & 0xff);
+    }
+  }
+  return Buffer.from(bytes).toString('utf8');
+}
+
+async function waitFor(predicate, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return false;
+}
+
+/* ------------------------------------------------------------------ */
 /* HTTP client with a cookie jar                                       */
 /* ------------------------------------------------------------------ */
 
@@ -236,6 +333,7 @@ async function call(method, path, { json, form, headers = {} } = {}) {
     json: asJson,
     location: response.headers.get('location'),
     hxRedirect: response.headers.get('hx-redirect'),
+    newNodeId: response.headers.get('x-new-node-id'),
   };
 }
 
@@ -279,6 +377,11 @@ async function main() {
   res = await call('POST', '/auth/email', { form: { email: AUTHORIZED.toUpperCase() } });
   assert.strictEqual(res.status, 200, res.text.slice(0, 200));
   assert.match(res.text, /Saisir le code/);
+  assert.match(
+    res.text,
+    /journaux du serveur/,
+    'en mode développement, la page doit dire que le code est dans les journaux, pas dans une boîte mail'
+  );
   assert.ok(lastCode, 'un code doit avoir été émis');
   ok('adresse habilitée (casse différente) : code émis');
 
@@ -360,6 +463,88 @@ async function main() {
   assert.strictEqual(res.status, 200);
   assert.match(res.text, /Maison/);
   ok('création et affichage d\u2019un domaine dans l\u2019espace du compte');
+
+  // 13.1 Outline reindent routes — the ones the Tab / Shift+Tab shortcuts call
+  // (see openspec/changes/tab-indents-line). The client decides whether to send a
+  // request at all; what is checked here is the server contract that decision
+  // mirrors: an impossible reindent changes nothing, a possible one moves the
+  // line by exactly one level, and the title typed just before is not lost.
+  const outlineLines = (html) => {
+    const lines = [];
+    const re = /<li class="line" id="node-([^"]+)"[^>]*data-parent="([^"]*)"[^>]*data-depth="(\d+)"/g;
+    let m;
+    while ((m = re.exec(html))) lines.push({ id: m[1], parent: m[2], depth: Number(m[3]) });
+    return lines;
+  };
+  const lineHtml = (html, id) =>
+    (new RegExp('<li class="line" id="node-' + id + '"[\\s\\S]*?</li>').exec(html) || [''])[0];
+
+  // Tab on the first root line: no previous sibling, so nothing may move.
+  res = await call('POST', '/domaine/voyages/api/nodes/n1/indent', {});
+  assert.strictEqual(res.status, 200);
+  assert.deepStrictEqual(outlineLines(res.text), [{ id: 'n1', parent: '', depth: 0 }]);
+  ok('Tab sur un premier enfant : aucun déplacement, réponse 200');
+
+  // Shift+Tab on a root line: no parent, so nothing may move either.
+  res = await call('POST', '/domaine/voyages/api/nodes/n1/outdent', {});
+  assert.strictEqual(res.status, 200);
+  assert.deepStrictEqual(outlineLines(res.text), [{ id: 'n1', parent: '', depth: 0 }]);
+  ok('MAJ+Tab sur une ligne racine : aucun déplacement, réponse 200');
+
+  // A second root line, created as the next sibling of the first — this is the
+  // line Enter creates — gives something to reindent.
+  res = await call('POST', '/domaine/voyages/api/nodes/n1/next', {});
+  assert.strictEqual(res.status, 200);
+  const n2 = res.newNodeId;
+  assert.ok(n2, 'l\u2019en-tête X-New-Node-Id doit nommer la nouvelle ligne');
+  assert.deepStrictEqual(outlineLines(res.text), [
+    { id: 'n1', parent: '', depth: 0 },
+    { id: n2, parent: '', depth: 0 },
+  ]);
+
+  // Tab on that line: it has a previous sibling, so it becomes its last child.
+  res = await call('POST', '/domaine/voyages/api/nodes/' + n2 + '/indent', {});
+  assert.strictEqual(res.status, 200);
+  assert.deepStrictEqual(outlineLines(res.text), [
+    { id: 'n1', parent: '', depth: 0 },
+    { id: n2, parent: 'n1', depth: 1 },
+  ]);
+  ok('Tab : la ligne devient enfant de son frère précédent (un cran)');
+
+  // Shift+Tab: back up one level, as the next sibling of its former parent.
+  res = await call('POST', '/domaine/voyages/api/nodes/' + n2 + '/outdent', {});
+  assert.strictEqual(res.status, 200);
+  assert.deepStrictEqual(outlineLines(res.text), [
+    { id: 'n1', parent: '', depth: 0 },
+    { id: n2, parent: '', depth: 0 },
+  ]);
+  ok('MAJ+Tab : la ligne remonte d\u2019un cran, sœur de son ancien parent');
+
+  // The title typed before the shortcut must survive the reindent: the client
+  // saves it (PUT) before calling the reindent route, so the re-rendered
+  // fragment carries it.
+  res = await call('PUT', '/domaine/voyages/api/nodes/' + n2, {
+    json: { title: 'Titre saisi au clavier' },
+  });
+  assert.strictEqual(res.status, 200);
+  res = await call('POST', '/domaine/voyages/api/nodes/' + n2 + '/indent', {});
+  assert.strictEqual(res.status, 200);
+  assert.match(lineHtml(res.text, n2), /Titre saisi au clavier/);
+  ok('réindent : le titre saisi juste avant n\u2019est pas perdu');
+
+  // Leave the adopted domain exactly as the fixture defined it: the extra line
+  // only existed to exercise the reindent.
+  res = await call('DELETE', '/domaine/voyages/api/nodes/' + n2, {});
+  assert.strictEqual(res.status, 200);
+  assert.deepStrictEqual(outlineLines(res.text), [{ id: 'n1', parent: '', depth: 0 }]);
+  ok('réindent : le domaine adopté est laissé dans son état d\u2019origine');
+
+  // The page footer is where line interactions are documented, so the new
+  // shortcuts have to be part of it.
+  res = await call('GET', '/domaine/voyages');
+  assert.strictEqual(res.status, 200);
+  assert.match(res.text, /Tab indente la ligne et MAJ\+Tab la désindente/);
+  ok('pied de page : les raccourcis Tab / MAJ+Tab sont documentés');
 
   // 14. Passkey management lists exactly this account's passkey.
   res = await call('GET', '/auth/passkeys');
@@ -520,6 +705,70 @@ async function main() {
   res = await call('GET', '/domaine/secret/api/outline');
   assert.strictEqual(res.status, 404);
   ok('isolation : les données d\u2019un autre compte sont inatteignables');
+
+  // 27. Relying party: frozen by configuration when present, otherwise derived
+  // from the address actually used — so localhost and 127.0.0.1 both work
+  // locally instead of failing with an origin mismatch.
+  const fakeRequest = (host) => ({
+    get: () => host,
+    hostname: host.split(':')[0],
+    protocol: 'http',
+  });
+  assert.strictEqual(passkeys.relyingParty(fakeRequest('localhost:3456')).source, 'configuration');
+
+  const savedId = process.env.RP_ID;
+  const savedOrigin = process.env.RP_ORIGIN;
+  delete process.env.RP_ID;
+  delete process.env.RP_ORIGIN;
+  assert.deepStrictEqual(passkeys.relyingParty(fakeRequest('localhost:3000')), {
+    rpID: 'localhost',
+    rpOrigin: 'http://localhost:3000',
+    source: 'requête',
+  });
+  assert.deepStrictEqual(passkeys.relyingParty(fakeRequest('127.0.0.1:3000')), {
+    rpID: '127.0.0.1',
+    rpOrigin: 'http://127.0.0.1:3000',
+    source: 'requête',
+  });
+  process.env.RP_ID = savedId;
+  process.env.RP_ORIGIN = savedOrigin;
+  ok('RP ID : figé par la configuration, sinon déduit de l\u2019adresse utilisée');
+
+  // 28. SMTP delivery: the same route, with a real SMTP conversation, must put
+  // the code in the message — and the page must stop claiming the development
+  // mode it is no longer in.
+  const smtp = await startFakeSmtp();
+  process.env.EMAIL_PROVIDER = 'smtp';
+  process.env.SMTP_HOST = '127.0.0.1';
+  process.env.SMTP_PORT = String(smtp.port);
+  process.env.SMTP_SECURE = 'false';
+  process.env.EMAIL_FROM = 'docdoc@example.test';
+  lastCode = null;
+
+  res = await call('POST', '/auth/email', { form: { email: AUTHORIZED } });
+  assert.strictEqual(res.status, 200, res.text.slice(0, 300));
+  assert.match(res.text, /envoyé à/, 'hors mode développement, la page doit annoncer un envoi');
+
+  assert.ok(await waitFor(() => smtp.messages.length > 0), 'aucun message reçu par le serveur SMTP');
+  const delivered = smtp.messages[0];
+  assert.match(delivered.recipients, /emmanuel\.grandiere@laposte\.net/i, 'destinataire inattendu');
+  assert.match(delivered.data, /docdoc@example\.test/, 'expéditeur absent du message');
+
+  const deliveredCode = /code d.acc.s docdoc : (\d{6})/.exec(decodeQuotedPrintable(delivered.data));
+  assert.ok(
+    deliveredCode,
+    `le code doit apparaître dans le corps du message. Corps reçu :\n${decodeQuotedPrintable(delivered.data).slice(0, 900)}`
+  );
+  // Leaving the development mode must also stop the code from being written to
+  // the server log: it now exists only in the delivered message.
+  assert.strictEqual(lastCode, null, 'en mode SMTP, le code ne doit plus être journalisé');
+
+  // The delivered code must actually work: this is the whole point.
+  res = await call('POST', '/auth/email/verify', { form: { code: deliveredCode[1] } });
+  assert.strictEqual(res.status, 200);
+  assert.match(res.text, /Enregistrer une passkey/);
+  smtp.close();
+  ok('SMTP : le code part par email, avec le bon destinataire, et reste utilisable');
 
   realLog(`\n${pass.length} vérifications passées.\n`);
   server.close();

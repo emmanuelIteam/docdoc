@@ -13,8 +13,13 @@ services:
       # Alias for the `mc ready local` healthcheck (no cURL in the image).
       MC_HOST_local: http://minioadmin:minioadmin@localhost:9000
     ports:
-      - "9000:9000" # S3 API
-      - "9001:9001" # Web console
+      # Published on 19000/19001 rather than 9000/9001: on this Windows host the
+      # corporate interception agent (Zscaler Z-Tunnel) answers on port 9000 —
+      # and on 127.0.0.1:9001 over IPv6 — so a container published on those
+      # ports is unreachable from the host (the agent answers instead, and every
+      # GET/PUT hangs). Inside the container the ports stay 9000/9001.
+      - "19000:9000" # S3 API
+      - "19001:9001" # Web console
     volumes:
       - minio-data:/data
     healthcheck:
@@ -24,37 +29,79 @@ services:
       retries: 5
       start_period: 5s
 
-  # web:
-  #   build: .
-  #   image: docdoc:latest
-  #   container_name: docdoc
-  #   ports:
-  #     - "${PORT:-3000}:3000"
-  #   environment:
-  #     - PORT=3000
-  #     - S3_ENDPOINT=http://minio:9000
-  #     - S3_REGION=fr-par
-  #     - S3_BUCKET=docdoc-json-storage
-  #     - AWS_ACCESS_KEY_ID=minioadmin
-  #     - AWS_SECRET_ACCESS_KEY=minioadmin
-  #   volumes:
-  #     # Read-only legacy import source: on first run against an empty bucket the
-  #     # app imports the local data files, then the bucket becomes the store.
-  #     - ./data:/app/data
-  #   depends_on:
-  #     minio:
-  #       condition: service_healthy
-  #   restart: unless-stopped
-  #   # The data layer is S3-backed; exactly one replica is enough for this
-  #   # single-writer app.
-  #   deploy:
-  #     replicas: 1
-  #   healthcheck:
-  #     test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/"]
-  #     interval: 30s
-  #     timeout: 5s
-  #     retries: 3
-  #     start_period: 5s
+  # Catcher SMTP local : tout message envoyé par l'application arrive ici au lieu
+  # d'une vraie boîte. Interface web sur http://localhost:8025
+  #
+  # Les ports sont publiés sur l'hôte, donc l'application tournant hors de
+  # compose (le cas courant en local : `node server.js`) l'atteint sur
+  # localhost:1026 — port de l'hôte, qui diffère du port interne au conteneur
+  # (1025) comme pour MinIO. C'est la valeur de SMTP_PORT dans .env.
+  # Rien à installer : ni compte, ni domaine authentifié.
+  #
+  # Les messages sont conservés en mémoire : ils disparaissent à l'arrêt du
+  # conteneur, ce qui est le comportement voulu pour un catcher.
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: docdoc-mailpit
+    ports:
+      - "1026:1025" # SMTP
+      - "8025:8025" # Interface web
+    environment:
+      # Accepte n'importe quels identifiants en clair : sans cela, renseigner
+      # SMTP_USER/SMTP_PASSWORD dans .env ferait échouer l'authentification.
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+
+  # Application dans un conteneur. Décommenter pour tout faire tourner dans
+  # compose ; dans ce cas SMTP_HOST vaut « mailpit » (nom du service) et non
+  # « localhost », et l'application est joignable sur http://localhost:3000.
+  #
+  # NODE_ENV reste « development » : en production le cookie de session est
+  # marqué Secure et l'application exige RP_ID / RP_ORIGIN explicites, ce qui
+  # n'a pas de sens sur http://localhost.
+  #
+  web:
+    build: .
+    image: docdoc:latest
+    container_name: docdoc
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      - PORT=3000
+      - NODE_ENV=development
+      - SESSION_SECRET=dev-secret-a-remplacer
+      - AUTHORIZED_EMAILS=emmanuel.grandiere@laposte.net
+      - S3_ENDPOINT=http://minio:9000
+      - S3_REGION=fr-par
+      - S3_BUCKET=docdoc-json-storage
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin
+      # Les codes partent vers le catcher, pas vers une vraie boîte.
+      - EMAIL_PROVIDER=smtp
+      - SMTP_HOST=mailpit
+      - SMTP_PORT=1025
+      - EMAIL_FROM=docdoc@example.test
+      - EMAIL_FROM_NAME=docdoc
+    volumes:
+      # Read-only legacy import source: on first run against an empty bucket the
+      # app imports the local data files, then the bucket becomes the store.
+      - ./data:/app/data
+    depends_on:
+      minio:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+    restart: unless-stopped
+    # The data layer is S3-backed; exactly one replica is enough for this
+    # single-writer app.
+    deploy:
+      replicas: 1
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
 volumes:
   minio-data:

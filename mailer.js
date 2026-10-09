@@ -2,15 +2,20 @@
 
 // Delivery of the one-time code.
 //
-// One interface (`sendCode`) and three providers behind it, so the calling
-// code never depends on a vendor:
+// One interface (`sendCode`) and four providers behind it, so the calling code
+// never depends on a vendor:
 //   dev       — writes the code to the server log, sends nothing (default)
-//   scaleway  — Scaleway Transactional Email (same account and region as the
-//               container and the bucket)
-//   brevo     — Brevo transactional email, the documented fallback
+//   smtp      — any SMTP relay, with or without authentication. This is what a
+//               local catcher (Mailpit, in docker-compose) uses, and it also
+//               covers the SMTP relays of Scaleway TEM and Brevo in production.
+//   scaleway  — Scaleway Transactional Email HTTP API (same account and region
+//               as the container and the bucket)
+//   brevo     — Brevo transactional email HTTP API, the documented fallback
 //
 // `sendCode` never throws: a provider failure is reported to the caller so the
 // visitor can be told the code could not be sent, and the server keeps running.
+
+const nodemailer = require('nodemailer');
 
 const DEFAULT_TTL_MINUTES = 10;
 
@@ -23,6 +28,17 @@ function config() {
     secretKey: String(process.env.SCW_SECRET_KEY || process.env.EMAIL_API_KEY || '').trim(),
     projectId: String(process.env.SCW_DEFAULT_PROJECT_ID || '').trim(),
     brevoApiKey: String(process.env.BREVO_API_KEY || '').trim(),
+    smtpHost: String(process.env.SMTP_HOST || '').trim(),
+    smtpPort: Number.parseInt(process.env.SMTP_PORT, 10) || 1026,
+    // true = TLS from the first byte (port 465). A local catcher listens in
+    // clear text, and a submission port (587) upgrades with STARTTLS.
+    smtpSecure: String(process.env.SMTP_SECURE || '').trim().toLowerCase() === 'true',
+    smtpRequireTls: String(process.env.SMTP_REQUIRE_TLS || '').trim().toLowerCase() === 'true',
+    smtpAllowSelfSigned:
+      String(process.env.SMTP_ALLOW_SELF_SIGNED || '').trim().toLowerCase() === 'true',
+    smtpUser: String(process.env.SMTP_USER || '').trim(),
+    smtpPassword: String(process.env.SMTP_PASSWORD || ''),
+    smtpConnectionTimeout: Number.parseInt(process.env.SMTP_TIMEOUT_MS, 10) || 10000,
   };
 }
 
@@ -95,6 +111,45 @@ async function sendWithBrevo(to, code, ttlMinutes) {
   );
 }
 
+// A single transport is reused across sends: opening a connection per code would
+// add a needless handshake, and a local catcher keeps the socket open anyway.
+let smtpTransportInstance = null;
+
+function smtpTransport() {
+  if (smtpTransportInstance) return smtpTransportInstance;
+  const c = config();
+  if (!c.smtpHost) throw new Error('SMTP_HOST manquante');
+  smtpTransportInstance = nodemailer.createTransport({
+    host: c.smtpHost,
+    port: c.smtpPort,
+    // true = implicit TLS from the first byte (usually 465). Port 587 and the
+    // clear-text port of a local catcher (1025) leave this false.
+    secure: c.smtpSecure,
+    requireTLS: c.smtpRequireTls,
+    auth: c.smtpUser ? { user: c.smtpUser, pass: c.smtpPassword } : undefined,
+    // Certificate verification stays on by default; a self-signed relay has to
+    // be allowed explicitly rather than silently accepted.
+    tls: c.smtpAllowSelfSigned ? { rejectUnauthorized: false } : undefined,
+    connectionTimeout: c.smtpConnectionTimeout,
+    greetingTimeout: c.smtpConnectionTimeout,
+    socketTimeout: c.smtpConnectionTimeout * 2,
+  });
+  return smtpTransportInstance;
+}
+
+async function sendWithSmtp(to, code, ttlMinutes) {
+  const c = config();
+  if (!c.from) throw new Error('EMAIL_FROM manquante');
+  const { subject, text, html } = message(code, ttlMinutes);
+  await smtpTransport().sendMail({
+    from: { address: c.from, name: c.fromName },
+    to,
+    subject,
+    text,
+    html,
+  });
+}
+
 // Deliver `code` to `to`. Resolves to { ok: true } or { ok: false, error }.
 async function sendCode(to, code, options = {}) {
   const ttlMinutes = options.ttlMinutes || DEFAULT_TTL_MINUTES;
@@ -108,6 +163,7 @@ async function sendCode(to, code, options = {}) {
   try {
     if (provider === 'scaleway') await sendWithScaleway(to, code, ttlMinutes);
     else if (provider === 'brevo') await sendWithBrevo(to, code, ttlMinutes);
+    else if (provider === 'smtp') await sendWithSmtp(to, code, ttlMinutes);
     else throw new Error(`Fournisseur d'email inconnu : ${provider}`);
     return { ok: true, provider };
   } catch (err) {
@@ -116,8 +172,36 @@ async function sendCode(to, code, options = {}) {
   }
 }
 
-// Called at startup: a development mailer in production means codes are
-// written to the logs instead of being delivered.
+// One line describing where the codes actually go, printed at startup. In
+// development mode nothing is sent, and the log line below is the only place
+// the code appears — the fastest way to lose an hour is not knowing that.
+function describe() {
+  const c = config();
+  if (c.provider === 'dev') {
+    return (
+      'mode développement — aucun email n\u2019est envoyé, le code s\u2019affiche dans ces journaux ' +
+      '(ligne « [docdoc][dev] code pour … »)'
+    );
+  }
+  if (c.provider === 'scaleway') {
+    return `Scaleway Transactional Email (${c.region}), expéditeur ${c.from || '(EMAIL_FROM manquant)'}`;
+  }
+  if (c.provider === 'brevo') {
+    return `Brevo, expéditeur ${c.from || '(EMAIL_FROM manquant)'}`;
+  }
+  if (c.provider === 'smtp') {
+    return (
+      `SMTP ${c.smtpHost || '(SMTP_HOST manquant)'}:${c.smtpPort}` +
+      `${c.smtpSecure ? ' (TLS)' : ''}${c.smtpUser ? ', authentifié' : ', sans authentification'}` +
+      `, expéditeur ${c.from || '(EMAIL_FROM manquant)'}`
+    );
+  }
+  return `fournisseur inconnu « ${c.provider} » — l\u2019envoi échouera`;
+}
+
+// Called at startup: a development mailer in production means codes are written
+// to the logs instead of being delivered, and an incomplete provider means every
+// send will fail.
 function warnIfMisconfigured() {
   const c = config();
   if (process.env.NODE_ENV === 'production' && c.provider === 'dev') {
@@ -125,6 +209,19 @@ function warnIfMisconfigured() {
       '\u26a0 EMAIL_PROVIDER vaut "dev" en production : les codes sont écrits dans les journaux ' +
         'et aucun email n\u2019est envoyé. Renseignez EMAIL_PROVIDER, EMAIL_FROM et les identifiants.'
     );
+    return;
+  }
+  if (c.provider === 'scaleway' && !c.secretKey) {
+    console.warn('\u26a0 SCW_SECRET_KEY est absente : aucun code ne pourra être envoyé par Scaleway TEM.');
+  }
+  if (c.provider === 'brevo' && !c.brevoApiKey) {
+    console.warn('\u26a0 BREVO_API_KEY est absente : aucun code ne pourra être envoyé par Brevo.');
+  }
+  if (c.provider === 'smtp' && !c.smtpHost) {
+    console.warn('\u26a0 SMTP_HOST est absente : aucun code ne pourra être envoyé par SMTP.');
+  }
+  if (c.provider !== 'dev' && !c.from) {
+    console.warn('\u26a0 EMAIL_FROM est absente : le fournisseur refusera l\u2019envoi.');
   }
 }
 
@@ -135,6 +232,7 @@ function isDeliverable() {
   if (c.provider === 'dev') return process.env.NODE_ENV !== 'production';
   if (c.provider === 'scaleway') return Boolean(c.secretKey && c.from);
   if (c.provider === 'brevo') return Boolean(c.brevoApiKey && c.from);
+  if (c.provider === 'smtp') return Boolean(c.smtpHost && c.from);
   return false;
 }
 
@@ -142,6 +240,7 @@ module.exports = {
   config,
   isDevMode,
   isDeliverable,
+  describe,
   sendCode,
   warnIfMisconfigured,
   DEFAULT_TTL_MINUTES,

@@ -41,17 +41,46 @@ L'application persiste ses données (domaines + thèmes) dans un bucket compatib
 
 En production, ces variables sont déjà injectées par le `main.tf` dans le conteneur Scaleway (voir plus bas).
 
-### Développement local avec MinIO
+### Développement local : MinIO + Mailpit
 
-Pour un dev local sans identifiants cloud, `docker-compose.yml` lance un service **MinIO** (object storage compatible S3) et câble le service `web` dessus. Au premier démarrage contre un bucket vide, l'application importe automatiquement les fichiers locaux de `data/` dans le bucket.
+`docker-compose.yml` lance deux services, et l'application tourne sur l'hôte :
+
+| Service | Rôle | Adresse |
+| --- | --- | --- |
+| `minio` | Stockage objet compatible S3 (les données) | API http://127.0.0.1:19000 · console `http://127.0.0.1:19001` |
+| `mailpit` | Catcher SMTP : reçoit tous les emails au lieu d'une vraie boîte | SMTP localhost:1026 · interface `http://localhost:8025` |
 
 ```bash
-docker compose up --build
+docker compose up -d          # MinIO + Mailpit
+cp .env.example .env          # déjà réglé pour ce montage
 ```
+```bash
+pnpm start                    
+```
+#### l'application sur `http://localhost:3000`
 
-Le bucket et les données sont alors persistés dans le volume MinIO (`gestion-prj-perso-minio-data`).
-URL : http://localhost:9000
-Compte : minioadmin:minioadmin
+Le fichier `.env.example` est pré-réglé pour ce montage : `S3_ENDPOINT=http://127.0.0.1:19000`,
+`EMAIL_PROVIDER=smtp`, `SMTP_HOST=localhost`, `SMTP_PORT=1026`. Les messages sont conservés en
+mémoire par Mailpit : ils disparaissent à l'arrêt du conteneur, ce qui est le comportement voulu
+pour un catcher. Aucun compte, aucun domaine à authentifier, aucune clé à demander. http://127.0.0.1:19001
+
+#### Console d'admin MinIO : `http://127.0.0.1:19001`
+Utilisateur et mot de passe : `minioadmin`
+
+MinIO est publié sur `19000`/`19001` et non sur `9000`/`9001` (les ports internes du conteneur
+restent `9000`/`9001`). Sur un poste Windows équipé d'un agent d'interception réseau d'entreprise
+(Zscaler Z-Tunnel), le port `9000` de l'hôte est capté par cet agent : il répond à la place de
+MinIO, si bien que `HeadBucket` semble réussir (« 200 Connection Established ») alors que tous les
+`GET`/`PUT` restent suspendus indéfiniment — l'application démarre, puis la moindre lecture de
+données ne revient jamais. `S3_ENDPOINT` vise de plus `127.0.0.1` et non `localhost`, dont la
+résolution IPv6 (`::1`) traverse le même agent (d'où un `ECONNRESET: socket hang up` immédiat).
+
+Le service `web` (l'application dans un conteneur) est présent mais **commenté** dans
+`docker-compose.yml` : l'activer fait tout tourner dans compose, auquel cas `SMTP_HOST` doit valoir
+`mailpit` (le nom du service) et non `localhost`.
+
+Le bucket et les données sont persistés dans le volume MinIO (`gestion-prj-perso-minio-data`). Au
+premier démarrage contre un bucket vide, l'application importe les fichiers locaux de `data/`.
 
 ## Accès par passkeys (WebAuthn)
 
@@ -114,9 +143,15 @@ une autre d'abord.
 | `AUTHORIZED_EMAILS` | `emmanuel.grandiere@laposte.net` | Adresses autorisées, séparées par des virgules. La règle est en configuration, pas en dur dans le code. |
 | `RP_ID` | `localhost` en développement | Nom d'hôte servi, **sans schéma ni port** (`docdoc.example.org`). |
 | `RP_ORIGIN` | `http://localhost:3000` en développement | Origine complète, schéma et port compris. |
-| `EMAIL_PROVIDER` | `dev` | `dev` (code écrit dans les journaux), `scaleway` ou `brevo`. |
+| `EMAIL_PROVIDER` | `dev` | `dev` (code écrit dans les journaux), `smtp`, `scaleway` ou `brevo`. |
 | `EMAIL_FROM` | — | Expéditeur. Voir « Domaine d'envoi » ci-dessous. |
 | `EMAIL_REGION` | `fr-par` | Région Scaleway Transactional Email. |
+| `SMTP_HOST` | — | Relais SMTP : `localhost` pour Mailpit, `mailpit` depuis un conteneur. |
+| `SMTP_PORT` | `1026` | Port SMTP (`1026` Mailpit sur cet hôte, `1025` port interne du conteneur, `587` soumission, `465` TLS implicite). |
+| `SMTP_SECURE` | `false` | `true` pour du TLS dès le premier octet (port 465). |
+| `SMTP_REQUIRE_TLS` | `false` | `true` pour exiger STARTTLS sur un port en clair. |
+| `SMTP_ALLOW_SELF_SIGNED` | `false` | `true` pour accepter un certificat auto-signé (vérification active sinon). |
+| `SMTP_USER`, `SMTP_PASSWORD` | — | Identifiants du relais, s'il en exige. |
 | `SCW_SECRET_KEY` | — | Clé secrète IAM pour l'API Transactional Email (en-tête `X-Auth-Token`). |
 | `SCW_DEFAULT_PROJECT_ID` | — | Projet Scaleway rattaché aux envois. |
 | `BREVO_API_KEY` | — | Identifiant Brevo si `EMAIL_PROVIDER=brevo`. |
@@ -139,13 +174,40 @@ attendant, la récupération par code email reste fonctionnelle.
 
 ### Domaine d'envoi des emails
 
-Le fournisseur doit être configuré avec un **domaine authentifié (SPF/DKIM)**. Une adresse
-`@laposte.net` comme expéditeur serait rejetée : utilisez un domaine dont vous maîtrisez les
-enregistrements DNS. Pour Scaleway, la clé utilisée doit porter `TransactionalEmail` en écriture.
+**En local, aucun domaine n'est nécessaire** : `EMAIL_PROVIDER=smtp` pointe sur Mailpit, aucun compte
+ni authentification SPF/DKIM n'entre en jeu. C'est le montage décrit plus haut.
 
-En développement (`EMAIL_PROVIDER=dev`), le code est écrit dans les journaux :
-`[docdoc][dev] code pour … : 123456`. Aucun email n'est envoyé, et un avertissement est émis au
-démarrage si ce mode est actif avec `NODE_ENV=production`.
+Pour un envoi réel, en revanche, le fournisseur doit être configuré avec un **domaine authentifié
+(SPF/DKIM)**. Une adresse `@laposte.net` comme expéditeur serait rejetée : utilisez un domaine dont
+vous maîtrisez les enregistrements DNS. Pour Scaleway, la clé utilisée doit porter
+`TransactionalEmail` en écriture.
+
+| Fournisseur | Ce qu'il faut | Remarque |
+| --- | --- | --- |
+| `smtp` | `SMTP_HOST`, `SMTP_PORT`, `EMAIL_FROM`, éventuellement `SMTP_USER`/`SMTP_PASSWORD` | Fonctionne avec Mailpit en local, et avec les relais SMTP de Scaleway TEM ou de Brevo en production. |
+| `scaleway` | `SCW_SECRET_KEY`, `SCW_DEFAULT_PROJECT_ID`, `EMAIL_FROM` | API HTTP, même compte et même région que le conteneur et le bucket. |
+| `brevo` | `BREVO_API_KEY`, `EMAIL_FROM` | API HTTP, repli documenté. |
+
+Si `EMAIL_PROVIDER=dev` (la valeur par défaut), **aucun email n'est envoyé** : le code est écrit dans
+les journaux du serveur, sur cette ligne :
+
+```
+[docdoc][dev] code pour vous@example.com : 123456 (valable 10 min)
+```
+
+C'est la première chose à vérifier quand « le code n'arrive pas ». Le serveur annonce son mode au
+démarrage (`Envoi des codes : …`) et la page de saisie du code le répète. Un avertissement est en
+outre émis au démarrage si ce mode est actif avec `NODE_ENV=production`, ou si les identifiants du
+fournisseur configuré sont incomplets.
+
+### Le fichier `.env`
+
+L'application lit un fichier `.env` à la racine au démarrage, sans écraser les variables déjà
+présentes dans l'environnement (celles injectées par le conteneur restent prioritaires) :
+
+```bash
+cp .env.example .env
+```
 
 ### Amorçage et migration des données existantes
 
@@ -339,17 +401,18 @@ cat .sops.yaml          # vérifier la clé publique et le motif
 #    .env : les recopier ici est ce qui permettra à sops exec-env de les injecter
 #    dans tofu. TF_VAR_session_secret, lui, ne se lit nulle part : il se génère.
 cat > secrets.sops.yaml <<'EOF'
-SCW_ACCESS_KEY: SCWH534BEYVG87JDC77G
-SCW_SECRET_KEY: edbeb842-a3ea-4ff4-bcb1-c2892daa5924
-SCW_DEFAULT_ORGANIZATION_ID: 2f2faa78-0d1d-4991-89e0-1a130750ac59
-SCW_DEFAULT_PROJECT_ID: 2f2faa78-0d1d-4991-89e0-1a130750ac59
-TF_VAR_session_secret: 6c27b0608aa4201d8dbfd5a5c9daf3d0c4646a7fb6ad2e8dd2ab58c08ecfb219
+SCW_ACCESS_KEY: remplacer
+SCW_SECRET_KEY: remplacer
+SCW_DEFAULT_ORGANIZATION_ID: remplacer
+SCW_DEFAULT_PROJECT_ID: remplacer
+TF_VAR_session_secret: remplacer
 EOF
 sops -e -i secrets.sops.yaml
 head -1 secrets.sops.yaml     # doit afficher ENC[AES256_GCM,...
 
 # 4. Saisir les vraies valeurs : sops déchiffre dans l'éditeur et rechiffre
 #    à l'enregistrement. (EDITOR=vim, nano, ou « code --wait ».)
+EDITOR="code --wait"
 sops secrets.sops.yaml
 ```
 

@@ -24,31 +24,41 @@ function isProduction() {
 }
 
 // The RP ID is the host served to the browser (no scheme, no port); the origin
-// is the full HTTPS origin. Both are frozen configuration because a passkey is
-// bound to them for life: changing the host invalidates every passkey.
-function config() {
-  const port = process.env.PORT || 3000;
-  return {
-    rpID: process.env.RP_ID || (isProduction() ? '' : 'localhost'),
-    rpOrigin: process.env.RP_ORIGIN || (isProduction() ? '' : `http://localhost:${port}`),
-  };
-}
-
-// A misconfigured relying party in production would issue passkeys bound to the
-// wrong host, which is unrecoverable — refuse rather than guess.
-function assertConfigured() {
-  const { rpID, rpOrigin } = config();
-  if (!rpID || !rpOrigin) {
+// is the full origin. In production both are frozen configuration, because a
+// passkey is bound to them for life: changing the host invalidates every
+// passkey, so a missing value is refused rather than guessed.
+//
+// In development they follow the address actually used, so opening the
+// application as `localhost` or as `127.0.0.1` both work. A fixed default of
+// `localhost` would make the ceremony fail with an origin mismatch as soon as
+// the browser is pointed at any other local address.
+function relyingParty(req) {
+  const configuredId = String(process.env.RP_ID || '').trim();
+  const configuredOrigin = String(process.env.RP_ORIGIN || '').trim();
+  if (configuredId && configuredOrigin) {
+    return { rpID: configuredId, rpOrigin: configuredOrigin, source: 'configuration' };
+  }
+  if (isProduction()) {
     throw new Error(
       'RP_ID et RP_ORIGIN sont obligatoires en production (nom d\u2019hôte et origine HTTPS de l\u2019application).'
     );
   }
-  return { rpID, rpOrigin };
+  if (!req) {
+    throw new Error('RP_ID et RP_ORIGIN doivent être configurés hors d\u2019une requête HTTP.');
+  }
+  const host = req.get('host') || `localhost:${process.env.PORT || 3000}`;
+  return {
+    rpID: req.hostname || host.split(':')[0],
+    rpOrigin: `${req.protocol}://${host}`,
+    source: 'requête',
+  };
 }
 
+// Whether a relying party can be resolved at all: either it is configured, or
+// the application runs outside production and derives it per request.
 function isConfigured() {
-  const { rpID, rpOrigin } = config();
-  return Boolean(rpID && rpOrigin);
+  if (process.env.RP_ID && process.env.RP_ORIGIN) return true;
+  return !isProduction();
 }
 
 // --- Registration (creating a passkey) --------------------------------
@@ -56,11 +66,10 @@ function isConfigured() {
 // The user handle is the account's opaque identifier, never the email: it is
 // stored by the authenticator and shown back to the user, and an address can
 // change. The email is only the human-readable `userName`.
-async function registrationOptions(account, email) {
-  const { rpID } = assertConfigured();
+async function registrationOptions(rp, account, email) {
   return generateRegistrationOptions({
     rpName: RP_NAME,
-    rpID,
+    rpID: rp.rpID,
     userName: email,
     userDisplayName: email,
     userID: new TextEncoder().encode(account.userId),
@@ -81,13 +90,12 @@ async function registrationOptions(account, email) {
 
 // Verify the attestation and normalise the credential for storage. Returns null
 // when the response does not verify.
-async function verifyRegistration(response, expectedChallenge) {
-  const { rpID, rpOrigin } = assertConfigured();
+async function verifyRegistration(rp, response, expectedChallenge) {
   const result = await verifyRegistrationResponse({
     response,
     expectedChallenge,
-    expectedOrigin: rpOrigin,
-    expectedRPID: rpID,
+    expectedOrigin: rp.rpOrigin,
+    expectedRPID: rp.rpID,
     requireUserVerification: false,
   });
   if (!result.verified) return null;
@@ -107,8 +115,7 @@ async function verifyRegistration(response, expectedChallenge) {
 
 // Without `account`, no `allowCredentials` is sent: the browser then offers the
 // discoverable passkeys it holds, which is the sign-in path that needs no email.
-async function authenticationOptions(account) {
-  const { rpID } = assertConfigured();
+async function authenticationOptions(rp, account) {
   const allowCredentials =
     account && account.passkeys && account.passkeys.length
       ? account.passkeys.map((p) => ({
@@ -117,7 +124,7 @@ async function authenticationOptions(account) {
         }))
       : undefined;
   return generateAuthenticationOptions({
-    rpID,
+    rpID: rp.rpID,
     allowCredentials,
     userVerification: 'preferred',
   });
@@ -132,13 +139,12 @@ async function authenticationOptions(account) {
 // one case the assertion is re-verified with a neutral stored counter: every
 // other check — challenge, origin, RP ID and signature — still runs, and the
 // anomaly is reported so it can be logged.
-async function verifyAuthentication(response, expectedChallenge, passkey) {
-  const { rpID, rpOrigin } = assertConfigured();
+async function verifyAuthentication(rp, response, expectedChallenge, passkey) {
   const base = {
     response,
     expectedChallenge,
-    expectedOrigin: rpOrigin,
-    expectedRPID: rpID,
+    expectedOrigin: rp.rpOrigin,
+    expectedRPID: rp.rpID,
     requireUserVerification: false,
   };
   const stored = {
@@ -168,9 +174,8 @@ async function verifyAuthentication(response, expectedChallenge, passkey) {
 module.exports = {
   RP_NAME,
   CEREMONY_TTL_MS,
-  config,
+  relyingParty,
   isConfigured,
-  assertConfigured,
   registrationOptions,
   verifyRegistration,
   authenticationOptions,

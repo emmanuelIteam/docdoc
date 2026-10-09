@@ -1,6 +1,9 @@
 node_modules/
 .npm-cache/
 data/projects.json
-.env
+# Sorties de Playwright (rapports et captures d'échec)
+test-results/
+playwright-report/
+blob-report/
 # Déchiffrement accidentel des secrets SOPS (seul secrets.sops.yaml, chiffré, se versionne)
 secrets.yaml

@@ -1,5 +1,9 @@
 'use strict';
 
+// Loads `.env` when one exists, before any module below reads the environment.
+// An exported variable always wins over the file.
+require('./env');
+
 const express = require('express');
 const session = require('express-session');
 const path = require('path');
@@ -875,7 +879,7 @@ function renderShell(space, content, activeSlug, opts = {}) {
       <main>${content}</main>
     </div>
     <footer class="shell-footer">
-      <p class="hint">Survolez une ligne : bouton de sélection et menu. Un clic sélectionne la ligne et ses sous-lignes ; un second clic sur la tête ne sélectionne que celle-ci. Le menu et la sélection se ferment dès que la souris quitte la ligne. Double-cliquez sur le bouton pour replier/déplier. Glissez depuis le bouton pour déplacer. Cliquez sur un titre pour le renommer. Collez une étiquette sur le domaine pour le rattacher à un thème.</p>
+      <p class="hint">Survolez une ligne : bouton de sélection et menu. Un clic sélectionne la ligne et ses sous-lignes ; un second clic sur la tête ne sélectionne que celle-ci. Le menu et la sélection se ferment dès que la souris quitte la ligne. Double-cliquez sur le bouton pour replier/déplier. Glissez depuis le bouton pour déplacer. Cliquez sur un titre pour le renommer ; pendant l'édition d'un titre ou sur une ligne sélectionnée, Tab indente la ligne et MAJ+Tab la désindente. Collez une étiquette sur le domaine pour le rattacher à un thème.</p>
     </footer>
   </div>
   <script src="/htmx.min.js"></script>
@@ -1248,9 +1252,17 @@ app.post('/domaine/:slug/api/labels', (req, res) => {
 function start() {
   return storage.ensureBucket().then(() => {
     mailer.warnIfMisconfigured();
+    console.log(`Envoi des codes : ${mailer.describe()}`);
     if (!passkeys.isConfigured()) {
       console.warn(
         '\u26a0 RP_ID / RP_ORIGIN non configurés : les passkeys ne peuvent pas être enregistrées ni utilisées.'
+      );
+    } else if (process.env.RP_ID && process.env.RP_ORIGIN) {
+      console.log(`Passkeys : RP ID « ${process.env.RP_ID} », origine « ${process.env.RP_ORIGIN} »`);
+    } else {
+      console.log(
+        'Passkeys : RP ID et origine déduits de l\u2019adresse utilisée (mode développement) — ' +
+          'ouvrez l\u2019application toujours par la même adresse.'
       );
     }
     if (storage.isConfigured()) {

@@ -116,12 +116,14 @@ Les réponses non authentifiées portent un en-tête `HX-Redirect` vers l'accuei
 
 *Alternatives considérées* : redirection HTTP classique (rejeté : htmx la suit et injecte le HTML de la page d'accueil dans la cible) ; masquer les erreurs côté client uniquement (rejeté : laisse des réponses 401 non gérées et ne reflète pas l'état serveur).
 
-**Décision 11 — Fournisseur d'email : Scaleway Transactional Email, avec mode développement.**
-Même compte et même région (`fr-par`) que le conteneur et le bucket ; repli Brevo si le palier d'essai ne suffit pas. Un mode développement journalise le code au lieu de l'envoyer, et l'envoi est encapsulé derrière une interface unique (`sendCode(email, code)`).
+**Décision 11 — Fournisseurs d'email pluggables : `smtp`, Scaleway TEM, Brevo, mode développement.**
+L'envoi est encapsulé derrière une interface unique (`sendCode(email, code)`) et quatre implémentations : `dev` journalise le code, `smtp` parle à n'importe quel relais via `nodemailer`, `scaleway` et `brevo` utilisent leur API HTTP. Le mode `smtp` couvre à la fois le développement local — un catcher **Mailpit** dans `docker-compose`, sur `localhost:1025`, dont l'interface affiche les messages sur http://localhost:8025 — et, en production, les relais SMTP de Scaleway TEM ou de Brevo. En production, le défaut reste l'API Scaleway TEM, même compte et même région (`fr-par`) que le conteneur et le bucket.
 
-*Pourquoi* : limiter le nombre de fournisseurs à administrer, et permettre de dérouler tout le parcours en local sans dépendance externe.
+*Pourquoi* : le mode `dev` oblige à lire les journaux du serveur, ce qui ne permet ni de vérifier le rendu d'un vrai message, ni de dérouler le parcours depuis un autre appareil. Un catcher local donne un vrai envoi sans compte, sans domaine authentifié et sans clé. Et comme `nodemailer` sert aussi les relais SMTP de production, l'implémentation n'est pas propre au développement.
 
-*Alternatives considérées* : SMTP + `nodemailer` (rejeté : configuration plus lourde, délivrabilité à gérer soi-même) ; API Brevo/Resend directement (repli documenté, pas le choix par défaut).
+*Alternatives considérées* : SMTP + `nodemailer` seul (insuffisant comme choix unique : l'API HTTP de Scaleway TEM évite d'administrer un relais et une authentification SPF/DKIM de plus) ; API Brevo/Resend comme défaut (repli documenté) ; MailHog (rejeté : plus maintenu, Mailpit est son successeur direct).
+
+*Vérification* : Docker n'étant pas disponible dans l'environnement de développement utilisé, le chemin SMTP est vérifié par un serveur SMTP minimal embarqué dans `test/passkey-flow.js` (salutation, EHLO, MAIL FROM, RCPT TO, DATA) : le test contrôle le destinataire et l'expéditeur, extrait le code du message réellement transmis et s'en sert pour terminer l'enrôlement. Le montage Mailpit lui-même reste à confirmer par `docker compose config` puis `docker compose up -d`.
 
 **Décision 12 — Domaine personnalisé avant diffusion des passkeys.**
 Le RP ID est le nom d'hôte servi. Le rattachement d'un domaine personnalisé au conteneur Scaleway est une tâche préalable bloquante ; tant qu'il n'est pas fait, l'endpoint généré est utilisé et le risque de perte globale des passkeys est documenté et assumé.
