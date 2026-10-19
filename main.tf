@@ -19,7 +19,7 @@ provider "scaleway" {
 variable "app_image" {
   description = "Image Docker de l'application. Le dépôt Docker Hub emmanuel7044/docdoc ne publie que les tags 1.0 et 1.1 : le tag 2.0, référencé par une version antérieure de ce fichier, n'existe pas."
   type        = string
-  default     = "docker.io/emmanuel7044/docdoc:1.1"
+  default     = "docker.io/emmanuel7044/docdoc:1.3"
 }
 
 variable "keep_warm" {
@@ -64,9 +64,9 @@ variable "email_provider" {
 }
 
 variable "email_from" {
-  description = "Expéditeur des codes. Le domaine doit être authentifié (SPF/DKIM) chez le fournisseur : une adresse @laposte.net serait rejetée."
+  description = "Expéditeur des codes. Le domaine doit être authentifié (SPF/DKIM) chez le fournisseur : une adresse @laposte.net serait rejetée. Le domaine d'envoi docdoc.re est déclaré dans la section 8 (Transactional Email)."
   type        = string
-  default     = ""
+  default     = "noreply@docdoc.re"
 }
 
 variable "session_secret" {
@@ -179,6 +179,21 @@ resource "scaleway_iam_policy" "s3" {
   }
 }
 
+# 4 bis. Politique IAM : autorise l'envoi d'emails transactionnels (codes
+#        d'accès) depuis la même application. La clé de l'application sert donc
+#        au stockage S3 et à Transactional Email ; une clé dédiée peut être
+#        fournie à la place via TF_VAR_tem_secret_key.
+resource "scaleway_iam_policy" "tem" {
+  name           = "docdoc-tem-policy"
+  description    = "Envoi des codes d'accès par Transactional Email pour l'application docdoc"
+  application_id = scaleway_iam_application.api.id
+
+  rule {
+    project_ids          = [data.scaleway_account_project.default.id]
+    permission_set_names = ["TransactionalEmailFullAccess"]
+  }
+}
+
 # 5. Clé API IAM spécifique pour que l'app Node.js accède au Bucket S3
 resource "scaleway_iam_api_key" "s3_credentials" {
   application_id = scaleway_iam_application.api.id
@@ -242,9 +257,12 @@ resource "scaleway_container" "app" {
     AWS_SECRET_ACCESS_KEY = scaleway_iam_api_key.s3_credentials.secret_key
     # Signature du cookie de session
     SESSION_SECRET = var.session_secret
-    # Envoi des codes via Scaleway Transactional Email (X-Auth-Token)
-    SCW_SECRET_KEY         = var.tem_secret_key
-    SCW_DEFAULT_PROJECT_ID = var.tem_project_id
+    # Envoi des codes via Scaleway Transactional Email (X-Auth-Token). Par
+    # défaut, la clé de l'application est utilisée (elle porte la politique
+    # TEM ci-dessus) ; TF_VAR_tem_secret_key / TF_VAR_tem_project_id permettent
+    # de fournir une clé et un projet dédiés.
+    SCW_SECRET_KEY         = var.tem_secret_key != "" ? var.tem_secret_key : scaleway_iam_api_key.s3_credentials.secret_key
+    SCW_DEFAULT_PROJECT_ID = var.tem_project_id != "" ? var.tem_project_id : data.scaleway_account_project.default.id
   }
 }
 
@@ -281,9 +299,15 @@ resource "scaleway_domain_record" "app" {
   name     = var.domain_record_name
   type     = var.domain_record_type
 
-  # Cible : l'endpoint généré du conteneur, sans le schéma.
-  data = replace(scaleway_container.app.public_endpoint, "https://", "")
-  ttl  = 300
+  # Cible : l'endpoint généré du conteneur, sans le schéma. Un ALIAS exige la
+  # forme absolue (point final) : sans elle, l'API Scaleway refuse la valeur
+  # (« hostname … invalid in data (RFC 1123) ») alors qu'un CNAME l'accepte.
+  data = (
+    var.domain_record_type == "ALIAS"
+    ? "${replace(scaleway_container.app.public_endpoint, "https://", "")}."
+    : replace(scaleway_container.app.public_endpoint, "https://", "")
+  )
+  ttl = 300
 }
 
 resource "scaleway_container_domain" "app" {
@@ -296,7 +320,79 @@ resource "scaleway_container_domain" "app" {
   depends_on = [scaleway_domain_record.app]
 }
 
-# 8. Outputs
+# ---------------------------------------------------------------------------
+# 8. Transactional Email — envoi des codes d'accès
+#
+#    Le domaine d'envoi est déclaré ici : le provider expose alors les valeurs à
+#    publier dans la zone (SPF, DKIM, MX « trou noir » et DMARC), qui seront
+#    créées à partir de ces attributs, puis `scaleway_tem_domain_validation`
+#    attendra que Scaleway les ait vérifiées. Aucune valeur n'est recopiée à la
+#    main. Le domaine est écrit en dur : il ne doit pas dépendre de
+#    `var.domain_name` (sinon un apply sans cette variable détruirait le domaine
+#    d'envoi).
+#
+#    Prérequis, une seule fois dans la console : souscrire à l'offre TEM
+#    « Essential » sur ce projet — l'abonnement n'est pas exposé par Terraform.
+# ---------------------------------------------------------------------------
+resource "scaleway_tem_domain" "docdoc" {
+  name       = "docdoc.re"
+  accept_tos = true
+  project_id = data.scaleway_account_project.default.id
+}
+
+# Enregistrements DNS attendus par Transactional Email, construits à partir des
+# attributs exposés par le domaine (aucune valeur recopiée à la main). Ils
+# cohabitent avec l'ALIAS de l'apex — ce qui serait impossible avec un CNAME.
+resource "scaleway_domain_record" "tem_spf" {
+  dns_zone = scaleway_tem_domain.docdoc.name
+  name     = ""
+  type     = "TXT"
+  data     = scaleway_tem_domain.docdoc.spf_value
+  ttl      = 300
+}
+
+resource "scaleway_domain_record" "tem_dkim" {
+  dns_zone = scaleway_tem_domain.docdoc.name
+  # `dkim_name` est un nom absolu (« <sélecteur>._domainkey.docdoc.re. ») alors
+  # que l'API attend un nom relatif à la zone.
+  name = trimsuffix(trimsuffix(scaleway_tem_domain.docdoc.dkim_name, "."), ".${scaleway_tem_domain.docdoc.name}")
+  type = "TXT"
+  data = scaleway_tem_domain.docdoc.dkim_config
+  ttl  = 300
+}
+
+resource "scaleway_domain_record" "tem_mx" {
+  dns_zone = scaleway_tem_domain.docdoc.name
+  name     = ""
+  type     = "MX"
+  data     = scaleway_tem_domain.docdoc.mx_blackhole
+  priority = 10
+  ttl      = 300
+}
+
+resource "scaleway_domain_record" "tem_dmarc" {
+  dns_zone = scaleway_tem_domain.docdoc.name
+  name     = trimsuffix(trimsuffix(scaleway_tem_domain.docdoc.dmarc_name, "."), ".${scaleway_tem_domain.docdoc.name}")
+  type     = "TXT"
+  data     = scaleway_tem_domain.docdoc.dmarc_config
+  ttl      = 300
+}
+
+# Vérification du domaine : attend que Scaleway ait constaté les enregistrements
+# ci-dessus, condition pour que l'API accepte d'envoyer depuis docdoc.re.
+resource "scaleway_tem_domain_validation" "docdoc" {
+  domain_id = scaleway_tem_domain.docdoc.id
+  timeout   = 1800
+
+  depends_on = [
+    scaleway_domain_record.tem_spf,
+    scaleway_domain_record.tem_dkim,
+    scaleway_domain_record.tem_mx,
+    scaleway_domain_record.tem_dmarc,
+  ]
+}
+
+# 9. Outputs
 output "app_url" {
   description = "URL d'accès HTTPS à l'application docdoc"
   value       = var.domain_name != "" ? "https://${local.custom_host}" : scaleway_container.app.public_endpoint

@@ -1,5 +1,6 @@
 # docdoc : Gestion de projet perso
 https://docdocnamespace572c01fb-docdoc-app.functions.fnc.fr-par.scw.cloud
+https://docdoc.re
 
 ## deepseek harness
 https://github.com/deepseek-ai/deepseek-harness
