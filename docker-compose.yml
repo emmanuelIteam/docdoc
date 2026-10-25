@@ -64,6 +64,7 @@ services:
     build: .
     image: docdoc:latest
     container_name: docdoc
+    pull_policy: build
     ports:
       - "${PORT:-3000}:3000"
     environment:
