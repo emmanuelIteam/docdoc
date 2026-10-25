@@ -70,7 +70,7 @@ console.log = (...args) => {
   realLog(...args);
 };
 
-const { start } = require('../server');
+const { start, invalidateSpace } = require('../server');
 const storage = require('../storage');
 const accounts = require('../accounts');
 const passkeys = require('../passkeys');
@@ -456,13 +456,43 @@ async function main() {
   ok('adoption des données existantes, sans seed inventé');
 
   // 13. The space works: a new domain can be created alongside the adopted one.
+  // Since add-administration-page, creation is submitted from the administration
+  // page and returns there (the domain page is reached from the sidebar, not as
+  // the destination of the creation).
   res = await call('POST', '/api/domains', { form: { name: 'Maison' } });
   assert.strictEqual(res.status, 302);
-  assert.strictEqual(res.location, '/domaine/maison');
+  assert.strictEqual(res.location, '/administration');
+  res = await call('GET', '/administration');
+  assert.strictEqual(res.status, 200);
+  assert.match(res.text, /Maison/);
   res = await call('GET', '/domaine/maison');
   assert.strictEqual(res.status, 200);
   assert.match(res.text, /Maison/);
+  // Since add-administration-page a domain never starts empty: the default root
+  // line is the only remaining way to create a project.
+  assert.match(res.text, /Nouveau projet/);
   ok('création et affichage d\u2019un domaine dans l\u2019espace du compte');
+
+  // 13.0 A stored domain whose outline is empty is materialized on first render
+  // (add-administration-page, "Keep at least one project line"). The space is
+  // reloaded from storage, so the empty document is what the server sees.
+  const owner = await accounts.getAccountByEmail(AUTHORIZED);
+  await storage.writeJson(storage.domainKey(owner.userId, 'vide'), {
+    id: 'vide',
+    name: 'Vide',
+    slug: 'vide',
+    order: 99,
+    labels: [],
+    projects: [],
+    displayOrder: [],
+  });
+  invalidateSpace(owner.userId);
+  res = await call('GET', '/domaine/vide');
+  assert.strictEqual(res.status, 200);
+  assert.match(res.text, /Nouveau projet/);
+  const persisted = await storage.readJson(storage.domainKey(owner.userId, 'vide'));
+  assert.strictEqual(persisted.projects.length, 1, 'la ligne par défaut doit être persistée');
+  ok('un domaine vide reçoit et persiste « Nouveau projet » au premier rendu');
 
   // 13.1 Outline reindent routes — the ones the Tab / Shift+Tab shortcuts call
   // (see openspec/changes/tab-indents-line). The client decides whether to send a

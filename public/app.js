@@ -641,20 +641,6 @@ if (sidebarToggle) {
   });
 }
 
-const newDomainBtn = document.getElementById('new-domain-btn');
-const newDomainForm = document.getElementById('new-domain-form');
-if (newDomainBtn && newDomainForm) {
-  newDomainBtn.addEventListener('click', () => {
-    const show = newDomainForm.hidden;
-    newDomainForm.hidden = !show;
-    newDomainBtn.textContent = show ? 'Fermer' : '+ Nouveau domaine';
-    if (show) {
-      const input = newDomainForm.querySelector('input');
-      if (input) input.focus();
-    }
-  });
-}
-
 /* -------------------------------------------------------------------- */
 /* Deep-link a line: copy its link and keep a reveal target active.      */
 /* -------------------------------------------------------------------- */
@@ -728,32 +714,21 @@ if (window.htmx && revealId) {
 }
 
 /* -------------------------------------------------------------------- */
-/* Themes: toggle the create-theme form and the label picker.            */
+/* Themes: the labels bar of a domain page.                              */
+/* The bar is re-rendered by htmx after every attach/detach, so the add   */
+/* control is delegated instead of being bound once at load time.         */
 /* -------------------------------------------------------------------- */
 
-const newThemeBtn = document.getElementById('new-theme-btn');
-const newThemeForm = document.getElementById('new-theme-form');
-if (newThemeBtn && newThemeForm) {
-  newThemeBtn.addEventListener('click', () => {
-    const show = newThemeForm.hidden;
-    newThemeForm.hidden = !show;
-    newThemeBtn.textContent = show ? 'Fermer' : '+ Nouveau thème';
-    if (show) {
-      const input = newThemeForm.querySelector('input[name="name"]');
-      if (input) input.focus();
-    }
-  });
-}
-
-const labelAddBtn = document.getElementById('label-add-btn');
-const labelAttachForm = document.getElementById('label-attach-form');
-if (labelAddBtn && labelAttachForm) {
-  labelAddBtn.addEventListener('click', () => {
-    labelAttachForm.hidden = !labelAttachForm.hidden;
-    const select = labelAttachForm.querySelector('select');
-    if (select && !labelAttachForm.hidden) select.focus();
-  });
-}
+document.addEventListener('click', (e) => {
+  const button = e.target.closest('#label-add-btn');
+  if (!button) return;
+  const form = document.getElementById('label-attach-form');
+  if (!form) return;
+  form.hidden = !form.hidden;
+  button.setAttribute('aria-expanded', form.hidden ? 'false' : 'true');
+  const select = form.querySelector('select');
+  if (select && !form.hidden) select.focus();
+});
 
 applySidebarState();
 

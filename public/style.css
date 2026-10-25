@@ -132,7 +132,19 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
    rather than by nesting, so a line's vertical position is independent of the
    DOM structure. A margin (not padding) keeps the absolutely-positioned
    context menu aligned with the indented line. */
-.outline { list-style: none; margin: 0; padding: 0; }
+.outline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  /* Indentation step per depth level. On a narrow screen (smartphone) the
+     step is halved by the media query below, so a line's title keeps more
+     horizontal room without changing its depth. */
+  --outline-indent: 1.6rem;
+}
+
+@media (max-width: 640px) {
+  .outline { --outline-indent: .8rem; }
+}
 
 .line {
   display: flex;
@@ -143,7 +155,7 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
   position: relative;
   cursor: default;
   user-select: none;
-  margin-left: calc(var(--depth, 0) * 1.6rem);
+  margin-left: calc(var(--depth, 0) * var(--outline-indent, 1.6rem));
 }
 .line:hover { background: #f4f4f5; }
 
@@ -346,6 +358,51 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
 .label-attach-form select { font: inherit; padding: .3rem .4rem; border: 1px solid var(--border); border-radius: .4rem; background: var(--card); }
 .label-attach-empty { margin: 0; color: var(--done); font-size: .85rem; }
 
+/* The hidden attribute must win over the display rules above (a control that
+   is revealed on demand would otherwise always be visible). */
+[hidden] { display: none !important; }
+
+/* Labels bar: fixed at the bottom right of a domain page, outside the outline's
+   flow. The picker opens upwards so it never falls off the viewport. */
+.labels-bar {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+  flex-wrap: wrap;
+  max-width: min(30rem, calc(100vw - 2rem));
+  padding: .4rem .55rem;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: .6rem;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, .18);
+}
+.labels-bar-icon { font-size: .9rem; line-height: 1; }
+.labels-bar .label-attach-form {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + .4rem);
+  padding: .45rem;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: .5rem;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, .18);
+}
+@media (max-width: 640px) {
+  .labels-bar { right: .5rem; bottom: .5rem; padding: .3rem .4rem; }
+}
+
+/* Reserve room on a domain page so the fixed bar never covers the last outline
+   lines or the footer's text. */
+body.has-labels-bar main { padding-bottom: 4rem; }
+body.has-labels-bar .shell-footer { padding-bottom: 4.5rem; }
+@media (max-width: 640px) {
+  body.has-labels-bar .shell-footer { padding-bottom: 5.5rem; }
+}
+
 /* ------------------------------------------------------------------ */
 /* Session box in the sidebar footer                                   */
 /* ------------------------------------------------------------------ */
@@ -358,8 +415,7 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
   padding-top: .6rem;
   border-top: 1px solid var(--border);
   font-size: .8rem;
-}
-.session-email {
+}.session-email {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
@@ -456,3 +512,119 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
   width: 18ch;
 }
 .passkey-meta { font-size: .78rem; color: var(--done); }
+
+/* ------------------------------------------------------------------ */
+/* Administration page (themes, domains, archives, matrix).            */
+/* ------------------------------------------------------------------ */
+
+.sidebar-extra { display: flex; flex-direction: column; gap: .25rem; margin-bottom: .35rem; }
+.sidebar-admin { font-weight: 600; }
+
+.admin { display: flex; flex-direction: column; gap: 1.75rem; padding-bottom: 2rem; max-width: 70rem; }
+.admin-section h2 {
+  font-size: .85rem;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--done);
+  margin: 0 0 .75rem;
+}
+.admin-subtitle { font-size: .85rem; margin: 1.25rem 0 .5rem; color: var(--done); font-weight: 600; }
+
+.admin-create { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; margin-bottom: .9rem; }
+.admin-create input:not([type="color"]),
+.admin-inline-form input:not([type="color"]) {
+  font: inherit;
+  padding: .35rem .5rem;
+  border: 1px solid var(--border);
+  border-radius: .4rem;
+  background: var(--card);
+}
+
+.admin-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .35rem; }
+.admin-row {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .35rem .5rem;
+  border: 1px solid var(--border);
+  border-radius: .5rem;
+  background: var(--card);
+}
+.admin-inline-form { display: inline-flex; align-items: center; gap: .35rem; margin: 0; }
+.admin-color {
+  width: 2.2rem;
+  height: 1.9rem;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: .4rem;
+  background: var(--card);
+}
+.admin-meta { font-size: .8rem; color: var(--done); white-space: nowrap; }
+.admin-actions { display: inline-flex; align-items: center; gap: .2rem; margin-left: auto; }
+.admin-actions .inline-form { margin: 0; }
+
+.admin-table-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: .5rem; }
+.admin-table { width: 100%; border-collapse: collapse; font-size: .9rem; background: var(--card); }
+.admin-table th,
+.admin-table td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+.admin-table tbody tr:last-child td { border-bottom: none; }
+.admin-table thead th {
+  font-size: .72rem;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--done);
+  font-weight: 600;
+}
+.admin-name-cell { min-width: 15rem; }
+.admin-domain-name { font-weight: 600; }
+.admin-rename { display: inline; margin-left: .35rem; }
+.admin-rename summary {
+  list-style: none;
+  display: inline-flex;
+  cursor: pointer;
+  vertical-align: middle;
+}
+.admin-rename summary::-webkit-details-marker { display: none; }
+.admin-rename[open] summary { background: #eef2ff; color: var(--accent-dark); }
+.admin-rename .admin-inline-form { display: none; }
+.admin-rename[open] .admin-inline-form { display: flex; margin-top: .4rem; }
+.admin-name-cell .admin-inline-form { width: 100%; }
+.admin-name-cell .rename-input { flex: 1 1 auto; min-width: 8rem; }
+.admin-hint { margin: .3rem 0 0; font-size: .75rem; color: var(--done); }
+.admin-url { color: var(--accent-dark); font-size: .82rem; word-break: break-all; }
+.admin-actions-cell { white-space: nowrap; }
+.admin-actions-cell .inline-form + .inline-form { margin-left: .2rem; }
+.theme-chips { display: inline-flex; flex-wrap: wrap; gap: .25rem; }
+.admin-empty { color: var(--done); font-size: .9rem; margin: .25rem 0; }
+
+.admin-archives summary { cursor: pointer; font-weight: 600; }
+.admin-archives[open] summary { margin-bottom: .75rem; }
+
+.admin-move[disabled],
+.btn-mini[disabled] { opacity: .3; cursor: default; }
+
+/* Theme x domain matrix. The row header is sticky so a wide grid keeps its
+   theme labels visible while scrolling horizontally. */
+.matrix-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: .5rem; }
+.matrix { border-collapse: collapse; font-size: .85rem; background: var(--card); }
+.matrix th,
+.matrix td { padding: .3rem .45rem; border-bottom: 1px solid var(--border); border-right: 1px solid var(--border); white-space: nowrap; }
+.matrix tr:last-child th,
+.matrix tr:last-child td { border-bottom: none; }
+.matrix thead th { font-size: .72rem; color: var(--done); font-weight: 600; }
+.matrix tbody th { text-align: left; position: sticky; left: 0; background: var(--card); }
+.matrix-form { margin: 0; }
+.matrix-toggle {
+  width: 1.9rem;
+  height: 1.65rem;
+  border: 1px solid var(--border);
+  border-radius: .35rem;
+  background: var(--card);
+  color: var(--done);
+  cursor: pointer;
+  font: inherit;
+  line-height: 1;
+  padding: 0;
+}
+.matrix-toggle:hover { border-color: var(--accent); }
+.matrix-toggle.on { background: #eef2ff; border-color: var(--accent); color: var(--accent-dark); }

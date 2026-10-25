@@ -360,19 +360,24 @@ test('6.7 MAJ+Tab sur une ligne racine ne fait rien et n’envoie aucune requêt
 /* 6.8: Tab keeps its meaning outside the outline lines                */
 /* ------------------------------------------------------------------ */
 
-test('6.8 Tab dans un formulaire latéral garde son sens de navigation', async ({ page }) => {
+test('6.8 Tab dans un formulaire de la page garde son sens de navigation', async ({ page }) => {
   await page.goto(domainPath);
   const calls = watchReindent(page);
 
-  const themeInput = page.locator('input.theme-name-input');
-  await themeInput.click();
-  await expect(themeInput).toBeFocused();
+  // Since add-administration-page the sidebar carries no form anymore; the
+  // domain page's label picker is the remaining plain form on this page. Tab in
+  // it must keep its ordinary meaning (move to the next control), and never be
+  // turned into an indent.
+  await page.click('#label-add-btn');
+  const picker = page.locator('#label-attach-form select[name="themeId"]');
+  await picker.focus();
+  await expect(picker).toBeFocused();
 
   await page.keyboard.press('Tab');
   await page.waitForTimeout(200);
 
   expect(calls).toEqual([]);
-  await expect(themeInput).not.toBeFocused();
+  await expect(picker).not.toBeFocused();
   await expect(line(page, 'b')).toHaveAttribute('data-depth', '0');
   await expect(line(page, 'a')).toHaveAttribute('data-depth', '0');
 });

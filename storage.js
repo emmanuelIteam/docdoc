@@ -88,6 +88,13 @@ function listDomainKeys(userId) {
   return listKeys(userKey(userId, 'domains/'));
 }
 
+// The archived domain keys of one account, confined to its own archive prefix
+// exactly like the active domains: an archive listing can never reach another
+// account's objects.
+function listArchiveKeys(userId) {
+  return listKeys(userKey(userId, 'archive/'));
+}
+
 let clientInstance = null;
 function client() {
   if (!clientInstance) {
@@ -232,4 +239,5 @@ module.exports = {
   themesKey,
   accountKey,
   listDomainKeys,
+  listArchiveKeys,
 };

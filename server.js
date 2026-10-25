@@ -134,10 +134,46 @@ function nextThemeColor(space) {
   return DEFAULT_THEME_COLORS[space.themes.length % DEFAULT_THEME_COLORS.length];
 }
 
+// Add (attach) or remove (detach) a theme id on a domain, without duplicating
+// it. Returns false when an attach targets a theme that is not in the palette,
+// so the caller can answer not found instead of silently ignoring the request.
+// Shared by the domain page's label picker and the administration matrix.
+function setDomainLabel(space, domain, themeId, action) {
+  if (action === 'attach') {
+    if (!findThemeById(space, themeId)) return false;
+    if (!domain.labels.includes(themeId)) domain.labels.push(themeId);
+    return true;
+  }
+  domain.labels = domain.labels.filter((id) => id !== themeId);
+  return true;
+}
+
+// Move a theme one position up or down. The palette array *is* the order (see
+// design D3): no `order` field to keep in sync.
+function moveTheme(space, theme, direction) {
+  const index = space.themes.indexOf(theme);
+  if (index < 0) return false;
+  const target = direction === 'up' ? index - 1 : index + 1;
+  if (target < 0 || target >= space.themes.length) return false;
+  const [moved] = space.themes.splice(index, 1);
+  space.themes.splice(target, 0, moved);
+  persistThemes(space);
+  return true;
+}
+
+
 // Respond by returning the user to where they came from (the sidebar and the
 // domain page are both server-rendered, so a redirect refreshes both).
 function backTo(req) {
   return req.headers.referer || '/';
+}
+
+// Where a mutation should land. A form can carry an explicit `returnTo`, but
+// only the administration page is accepted — the value is compared to a single
+// literal, never concatenated into a URL, so it cannot become an open redirect.
+function redirectAfter(req, res, defaultPath) {
+  const returnTo = req.body && typeof req.body.returnTo === 'string' ? req.body.returnTo : '';
+  res.redirect(302, returnTo === '/administration' ? '/administration' : defaultPath);
 }
 
 async function loadThemes(space) {
@@ -245,6 +281,49 @@ function nextOrder(space) {
   return max + 1;
 }
 
+// Move a domain one position up or down in the displayed order, by exchanging
+// its `order` with its displayed neighbour. Legacy or restored files can share
+// the same `order`; a plain swap would then be a no-op, so equal orders are
+// first collapsed into a distinct 0..n-1 sequence following the display order.
+// Every domain whose order changed is persisted, so the move survives a reload.
+function moveDomain(space, domain, direction) {
+  const changed = new Set();
+  rebuildDomainList(space);
+  let list = space.domainList;
+  let index = list.findIndex((entry) => entry.id === domain.id);
+  if (index < 0) return false;
+  let target = direction === 'up' ? index - 1 : index + 1;
+  if (target < 0 || target >= list.length) return false;
+
+  let neighbour = space.domains.get(list[target].id);
+  if (!neighbour) return false;
+
+  if (domain.order === neighbour.order) {
+    list.forEach((entry, position) => {
+      const d = space.domains.get(entry.id);
+      if (!d) return;
+      d.order = position;
+      changed.add(d);
+    });
+    rebuildDomainList(space);
+    list = space.domainList;
+    index = list.findIndex((entry) => entry.id === domain.id);
+    target = direction === 'up' ? index - 1 : index + 1;
+    if (target < 0 || target >= list.length) return false;
+    neighbour = space.domains.get(list[target].id);
+    if (!neighbour) return false;
+  }
+
+  const previousOrder = domain.order;
+  domain.order = neighbour.order;
+  neighbour.order = previousOrder;
+  changed.add(domain);
+  changed.add(neighbour);
+  rebuildDomainList(space);
+  for (const d of changed) persistDomain(space, d);
+  return true;
+}
+
 function normalizeSlugBase(name) {
   return name
     .normalize('NFD')
@@ -291,6 +370,26 @@ async function loadDomains(space) {
   }
   for (const d of loaded) space.domains.set(d.id, d);
   rebuildDomainList(space);
+}
+
+// The account's archived domains, read from its own archive prefix. Objects that
+// are missing, unparseable, or not domain-shaped are skipped, exactly as the
+// active listing does, so one corrupt archive cannot hide the others.
+async function listArchivedDomains(space) {
+  const keys = await storage.listArchiveKeys(space.userId);
+  const archives = [];
+  for (const key of keys) {
+    const parsed = await storage.readJson(key);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
+    if (typeof parsed.id !== 'string' || typeof parsed.name !== 'string') continue;
+    archives.push({
+      id: parsed.id,
+      name: parsed.name,
+      labels: Array.isArray(parsed.labels) ? parsed.labels.map(String) : [],
+    });
+  }
+  archives.sort((a, b) => a.name.localeCompare(b.name));
+  return archives;
 }
 
 /* ------------------------------------------------------------------ */
@@ -506,6 +605,19 @@ function createNode(domain, parentId) {
     domain.displayOrder.push(node.id);
   }
   return node;
+}
+
+// A domain always shows at least one root line. The outline is the only place a
+// line can be created (Enter on an existing line), so an empty outline would be
+// a dead end: materialize the default project lazily, the first time it matters.
+// Idempotent and synchronous before any async write, so two concurrent requests
+// cannot create two default lines.
+function ensureDefaultProject(space, domain) {
+  if (domain.projects.length > 0) return false;
+  const node = createNode(domain, null);
+  if (!node) return false;
+  persistDomain(space, domain);
+  return true;
 }
 
 // Create a new node at the same level as `anchorId`, inserted right after it
@@ -788,10 +900,12 @@ function domainLink(d, activeSlug) {
   return `<a class="${cls}" href="/domaine/${d.slug}">${escapeHtml(d.name)}</a>`;
 }
 
-function renderSidebar(space, activeSlug) {
+function renderSidebarNav(space, activeSlug) {
   // Group domains by theme, then list domains that carry no theme label under a
   // "Sans thème" section. A domain carrying several theme labels is listed under
-  // each corresponding theme group (cross-cutting view).
+  // each corresponding theme group (cross-cutting view). The sidebar is a pure
+  // navigation surface: themes and domains are managed on /administration.
+  // Rendered on its own so a labels-bar swap can refresh it out-of-band.
   const themeGroups = space.themes
     .map((t) => {
       const members = space.domainList
@@ -802,13 +916,7 @@ function renderSidebar(space, activeSlug) {
         '<div class="theme-group">' +
         `<div class="theme-group-header">` +
         `<span class="theme-dot" style="background:${escapeHtml(t.color)}"></span>` +
-        `<form method="post" action="/api/themes/${t.id}/rename" class="inline-form theme-rename">` +
-        `<input name="name" value="${escapeHtml(t.name)}" class="theme-name-input" title="Renommer le thème" aria-label="Nom du thème">` +
-        `<button type="submit" class="btn-mini" title="Renommer">✏️</button>` +
-        `</form>` +
-        `<form method="post" action="/api/themes/${t.id}/delete" class="inline-form" onsubmit="return confirm('Supprimer ce thème et le retirer des domaines ?');">` +
-        `<button type="submit" class="btn-mini danger" title="Supprimer">🗑</button>` +
-        `</form>` +
+        `<span class="theme-group-name">${escapeHtml(t.name)}</span>` +
         `</div>` +
         `<div class="theme-group-domains">${members || '<span class="sidebar-muted">Aucun domaine</span>'}</div>` +
         '</div>'
@@ -827,27 +935,19 @@ function renderSidebar(space, activeSlug) {
       </div>`
     : '';
 
-  const navBody = themeGroups + untaggedGroup;
+  return themeGroups + untaggedGroup || '<p class="sidebar-empty">Aucun domaine</p>';
+}
+
+function renderSidebar(space, activeSlug, opts = {}) {
+  const adminActive = Boolean(opts.admin);
 
   return `<aside class="sidebar" id="sidebar">
       <div class="sidebar-header">Domaines</div>
-      <nav class="sidebar-nav">${navBody || '<p class="sidebar-empty">Aucun domaine</p>'}</nav>
+      <nav class="sidebar-nav" id="sidebar-nav">${renderSidebarNav(space, activeSlug)}</nav>
       <div class="sidebar-footer">
-        <div class="sidebar-actions">
-          <button type="button" class="btn" id="new-theme-btn">+ Nouveau thème</button>
-          <button type="button" class="btn" id="new-domain-btn">+ Nouveau domaine</button>
-        </div>
-        <form method="post" action="/api/themes" class="new-theme-form" id="new-theme-form" hidden>
-          <input name="name" placeholder="Nom du thème" required autocomplete="off">
-          <label class="color-field">Couleur
-            <input type="color" name="color" value="${DEFAULT_THEME_COLORS[0]}">
-          </label>
-          <button type="submit" class="btn">Créer</button>
-        </form>
-        <form method="post" action="/api/domains" class="new-domain-form" id="new-domain-form" hidden>
-          <input name="name" placeholder="Nom du domaine" required autocomplete="off">
-          <button type="submit" class="btn">Créer</button>
-        </form>
+        <nav class="sidebar-extra">
+          <a class="sidebar-link sidebar-admin${adminActive ? ' active' : ''}" href="/administration"${adminActive ? ' aria-current="page"' : ''}>Administration</a>
+        </nav>
         <div class="session-box">
           <span class="session-email" title="${escapeHtml(space.email || '')}">${escapeHtml(space.email || '')}</span>
           <a class="btn-mini" href="/auth/passkeys" title="Gérer mes passkeys">🔑</a>
@@ -868,9 +968,9 @@ function renderShell(space, content, activeSlug, opts = {}) {
   <title>${escapeHtml(opts.title || 'Mes projets')}</title>
   <link rel="stylesheet" href="/style.css">
 </head>
-<body data-domain-slug="${escapeHtml(activeSlug || '')}">
+<body class="${opts.labelsBar ? 'has-labels-bar' : ''}" data-domain-slug="${escapeHtml(activeSlug || '')}">
   <div class="shell">
-    ${renderSidebar(space, activeSlug)}
+    ${renderSidebar(space, activeSlug, opts)}
     <div class="content">
       <header class="topbar">
         <button type="button" class="btn sidebar-toggle" id="sidebar-toggle" title="Afficher/masquer le panneau">☰</button>
@@ -879,7 +979,7 @@ function renderShell(space, content, activeSlug, opts = {}) {
       <main>${content}</main>
     </div>
     <footer class="shell-footer">
-      <p class="hint">Survolez une ligne : bouton de sélection et menu. Un clic sélectionne la ligne et ses sous-lignes ; un second clic sur la tête ne sélectionne que celle-ci. Le menu et la sélection se ferment dès que la souris quitte la ligne. Double-cliquez sur le bouton pour replier/déplier. Glissez depuis le bouton pour déplacer. Cliquez sur un titre pour le renommer ; pendant l'édition d'un titre ou sur une ligne sélectionnée, Tab indente la ligne et MAJ+Tab la désindente. Collez une étiquette sur le domaine pour le rattacher à un thème.</p>
+      <p class="hint">Survolez une ligne : bouton de sélection et menu. Un clic sélectionne la ligne et ses sous-lignes ; un second clic sur la tête ne sélectionne que celle-ci. Le menu et la sélection se ferment dès que la souris quitte la ligne. Double-cliquez sur le bouton pour replier/déplier. Glissez depuis le bouton pour déplacer. Cliquez sur un titre pour le renommer ; pendant l'édition d'un titre ou sur une ligne sélectionnée, Tab indente la ligne et MAJ+Tab la désindente. Collez une étiquette sur le domaine pour le rattacher à un thème. Les thèmes et les domaines se gèrent depuis la page Administration, en pied du panneau.</p>
     </footer>
   </div>
   <script src="/htmx.min.js"></script>
@@ -890,7 +990,8 @@ function renderShell(space, content, activeSlug, opts = {}) {
 
 function themeChip(domain, theme) {
   return (
-    `<form method="post" action="/domaine/${domain.slug}/api/labels" class="label-chip">` +
+    `<form method="post" action="/domaine/${domain.slug}/api/labels" class="label-chip"` +
+    ` hx-post="/domaine/${domain.slug}/api/labels" hx-target="#labels-bar" hx-swap="outerHTML">` +
     `<input type="hidden" name="action" value="detach">` +
     `<input type="hidden" name="themeId" value="${theme.id}">` +
     `<span class="label-chip-dot" style="background:${escapeHtml(theme.color)}"></span>` +
@@ -900,66 +1001,266 @@ function themeChip(domain, theme) {
   );
 }
 
-function renderLabelsZone(space, domain) {
+// The labels bar floats at the bottom right of a domain page, outside the
+// outline's flow. Each chip and the picker post to the domain's labels route;
+// htmx swaps the bar in place and the server returns the refreshed sidebar nav
+// in the same response (out-of-band), so the grouping never contradicts the
+// chips. Without JS, the same forms reload the page.
+function renderLabelsBar(space, domain) {
   const chips = (domain.labels || [])
     .map((id) => findThemeById(space, id))
     .filter(Boolean)
     .map((t) => themeChip(domain, t))
     .join('');
 
-  const attachOptions = space.themes.length
-    ? space.themes
+  const controls = space.themes.length
+    ? `<button type="button" class="btn-mini" id="label-add-btn" title="Coller une étiquette" aria-expanded="false">+</button>` +
+      `<form method="post" action="/domaine/${domain.slug}/api/labels" class="label-attach-form" id="label-attach-form" hidden` +
+      ` hx-post="/domaine/${domain.slug}/api/labels" hx-target="#labels-bar" hx-swap="outerHTML">` +
+      `<input type="hidden" name="action" value="attach">` +
+      `<select name="themeId" aria-label="Thème à attacher">${space.themes
         .map((t) => `<option value="${t.id}">${escapeHtml(t.name)}</option>`)
-        .join('')
-    : '';
-  const attach =
-    space.themes.length
-      ? `<form method="post" action="/domaine/${domain.slug}/api/labels" class="label-attach-form" id="label-attach-form" hidden>
-           <input type="hidden" name="action" value="attach">
-           <select name="themeId">${attachOptions}</select>
-           <button type="submit" class="btn">Attacher</button>
-         </form>`
-      : `<p class="label-attach-empty" id="label-attach-form" hidden>Aucun thème — créez-en un dans le panneau de gauche.</p>`;
+        .join('')}</select>` +
+      `<button type="submit" class="btn">Attacher</button>` +
+      `</form>`
+    : `<p class="label-attach-empty">Aucun thème — créez-en un dans <a href="/administration">Administration</a>.</p>`;
 
-  return (
-    `<div class="labels-zone">` +
-    `<span class="labels-label">Étiquettes</span>` +
-    chips +
-    `<button type="button" class="btn-mini" id="label-add-btn" title="Coller une étiquette">+</button>` +
-    attach +
-    `</div>`
-  );
-}
-
-function renderDomainActions(space, domain) {
-  return `<div class="toolbar">
-    <button class="btn" hx-post="/domaine/${domain.slug}/api/nodes" hx-target="#outline" hx-swap="outerHTML">+ Nouveau projet</button>
-    ${renderLabelsZone(space, domain)}
-    <form method="post" action="/api/domains/${domain.id}/rename" class="inline-form">
-      <input name="name" value="${escapeHtml(domain.name)}" class="rename-input" title="Renommer le domaine" aria-label="Nom du domaine">
-      <button type="submit" class="btn" title="Renommer">✏️</button>
-    </form>
-    <form method="post" action="/api/domains/${domain.id}/archive" class="inline-form" onsubmit="return confirm('Archiver ce domaine et son contenu ?');">
-      <button type="submit" class="btn danger" title="Archiver">🗑</button>
-    </form>
-  </div>`;
+  return `<div class="labels-bar" id="labels-bar">
+      <span class="labels-bar-icon" title="Étiquettes">🏷</span>
+      ${chips}
+      ${controls}
+    </div>`;
 }
 
 function renderPage(space, domain, expandIds) {
   return renderShell(
     space,
-    renderDomainActions(space, domain) + renderOutline(domain, domain.slug, expandIds),
+    renderOutline(domain, domain.slug, expandIds) + renderLabelsBar(space, domain),
     domain.slug,
-    { title: domain.name }
+    { title: domain.name, labelsBar: true }
   );
 }
 
 function renderEmptyPage(space) {
   return renderShell(
     space,
-    '<div class="empty-state"><h2>Aucun domaine</h2><p>Créez un domaine dans le panneau de gauche pour regrouper vos projets.</p></div>',
+    '<div class="empty-state"><h2>Aucun domaine</h2><p>Créez un domaine depuis la page <a href="/administration">Administration</a> pour regrouper vos projets.</p></div>',
     null,
     { title: 'Mes projets' }
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Administration page                                                 */
+/*                                                                     */
+/* One page, three stacked sections (themes, domains, archives) and a  */
+/* theme x domain matrix. Every mutation is a plain POST form that     */
+/* redirects back here via `returnTo`: no client state to keep.        */
+/* ------------------------------------------------------------------ */
+
+const ADMIN_RETURN = '<input type="hidden" name="returnTo" value="/administration">';
+
+// `onsubmit` returning `confirm(message)` for a message built from user data.
+// JSON-encoding then HTML-escaping keeps a domain name from breaking out of the
+// attribute or of the JavaScript string.
+function confirmSubmit(message) {
+  return `onsubmit="return confirm(${escapeHtml(JSON.stringify(message))})"`;
+}
+
+// Up/down controls shared by the theme and domain tables. Out-of-range moves
+// render a disabled button instead of sending a request that would no-op.
+function adminMoveForms(action, canUp, canDown) {
+  const form = (dir, label, enabled) =>
+    `<form method="post" action="${action}/move" class="inline-form">
+       <input type="hidden" name="dir" value="${dir}">
+       ${ADMIN_RETURN}
+       <button type="submit" class="btn-mini admin-move" title="${label}"${enabled ? '' : ' disabled'}>${dir === 'up' ? '↑' : '↓'}</button>
+     </form>`;
+  return form('up', 'Monter', canUp) + form('down', 'Descendre', canDown);
+}
+
+function themeChips(space, labels) {
+  const chips = (labels || [])
+    .map((id) => findThemeById(space, id))
+    .filter(Boolean)
+    .map(
+      (t) =>
+        '<span class="label-chip">' +
+        `<span class="label-chip-dot" style="background:${escapeHtml(t.color)}"></span>` +
+        `<span class="label-chip-name">${escapeHtml(t.name)}</span>` +
+        '</span>'
+    )
+    .join('');
+  return chips || '<span class="admin-meta">Aucun</span>';
+}
+
+function renderThemeRows(space) {
+  return space.themes
+    .map((theme, index) => {
+      const count = space.domainList.filter((d) => d.labels.includes(theme.id)).length;
+      return `<li class="admin-row">
+        <form method="post" action="/api/themes/${theme.id}/rename" class="admin-inline-form">
+          <input name="name" value="${escapeHtml(theme.name)}" class="theme-name-input" aria-label="Nom du thème" required autocomplete="off">
+          <input type="color" name="color" value="${escapeHtml(theme.color)}" class="admin-color" aria-label="Couleur du thème" title="Couleur du thème">
+          <button type="submit" class="btn-mini" title="Enregistrer le nom et la couleur">✓</button>
+          ${ADMIN_RETURN}
+        </form>
+        <span class="admin-meta">${count} domaine${count > 1 ? 's' : ''}</span>
+        <span class="admin-actions">
+          ${adminMoveForms(`/api/themes/${theme.id}`, index > 0, index < space.themes.length - 1)}
+          <form method="post" action="/api/themes/${theme.id}/delete" class="inline-form" ${confirmSubmit(
+            'Supprimer ce thème et le retirer des domaines ?'
+          )}>
+            <button type="submit" class="btn-mini danger" title="Supprimer">🗑</button>
+          </form>
+        </span>
+      </li>`;
+    })
+    .join('');
+}
+
+function renderDomainRows(space) {
+  return space.domainList
+    .map((entry, index) => {
+      const domain = space.domains.get(entry.id);
+      if (!domain) return '';
+      return `<tr>
+        <td class="admin-name-cell">
+          <span class="admin-domain-name">${escapeHtml(domain.name)}</span>
+          <details class="admin-rename">
+            <summary class="btn-mini" title="Renommer le domaine" aria-label="Renommer le domaine">✎</summary>
+            <form method="post" action="/api/domains/${domain.id}/rename" class="admin-inline-form">
+              <input name="name" value="${escapeHtml(domain.name)}" class="rename-input" aria-label="Nouveau nom du domaine" required autocomplete="off">
+              <button type="submit" class="btn-mini" title="Enregistrer le nom">✓</button>
+              ${ADMIN_RETURN}
+            </form>
+            <p class="admin-hint">L'URL sera régénérée à partir du nouveau nom.</p>
+          </details>
+        </td>
+        <td><a class="admin-url" href="/domaine/${domain.slug}">/domaine/${escapeHtml(domain.slug)}</a></td>
+        <td><span class="theme-chips">${themeChips(space, entry.labels)}</span></td>
+        <td class="admin-actions-cell">
+          ${adminMoveForms(`/api/domains/${domain.id}`, index > 0, index < space.domainList.length - 1)}
+          <form method="post" action="/api/domains/${domain.id}/archive" class="inline-form" ${confirmSubmit(
+            'Archiver ce domaine et son contenu ?'
+          )}>
+            <button type="submit" class="btn-mini danger" title="Archiver">🗑</button>
+            ${ADMIN_RETURN}
+          </form>
+        </td>
+      </tr>`;
+    })
+    .join('');
+}
+
+function renderMatrix(space) {
+  if (!space.themes.length || !space.domainList.length) {
+    return '<div class="matrix-scroll"><p class="admin-empty">Aucune répartition à afficher : il faut au moins un thème et un domaine.</p></div>';
+  }
+  const head = space.domainList.map((d) => `<th scope="col">${escapeHtml(d.name)}</th>`).join('');
+  const rows = space.themes
+    .map((theme) => {
+      const cells = space.domainList
+        .map((d) => {
+          const attached = d.labels.includes(theme.id);
+          const title = `${attached ? 'Retirer' : 'Attacher'} « ${theme.name} » ${attached ? 'de' : 'à'} « ${d.name} »`;
+          return `<td><form method="post" action="/api/themes/${theme.id}/labels" class="matrix-form">
+            <input type="hidden" name="domainId" value="${d.id}">
+            <input type="hidden" name="action" value="${attached ? 'detach' : 'attach'}">
+            ${ADMIN_RETURN}
+            <button type="submit" class="matrix-toggle${attached ? ' on' : ''}" aria-pressed="${attached}" title="${escapeHtml(title)}">${attached ? '✓' : '○'}</button>
+          </form></td>`;
+        })
+        .join('');
+      return `<tr><th scope="row"><span class="theme-dot" style="background:${escapeHtml(theme.color)}"></span> ${escapeHtml(theme.name)}</th>${cells}</tr>`;
+    })
+    .join('');
+  return `<div class="matrix-scroll"><table class="matrix">
+    <thead><tr><th scope="col">Thème</th>${head}</tr></thead>
+    <tbody>${rows}</tbody>
+  </table></div>`;
+}
+
+function renderArchiveRows(space, archives) {
+  return archives
+    .map(
+      (archive) => `<tr>
+        <td>${escapeHtml(archive.name)}</td>
+        <td><span class="theme-chips">${themeChips(space, archive.labels)}</span></td>
+        <td class="admin-actions-cell">
+          <form method="post" action="/api/archives/${archive.id}/restore" class="inline-form">
+            <button type="submit" class="btn" title="Restaurer ce domaine">Restaurer</button>
+            ${ADMIN_RETURN}
+          </form>
+          <form method="post" action="/api/archives/${archive.id}/purge" class="inline-form" ${confirmSubmit(
+            `Purger définitivement « ${archive.name} » ? Cette action est irréversible.`
+          )}>
+            <button type="submit" class="btn danger" title="Supprimer définitivement">Purger</button>
+            ${ADMIN_RETURN}
+          </form>
+        </td>
+      </tr>`
+    )
+    .join('');
+}
+
+async function renderAdminPage(space) {
+  const archives = await listArchivedDomains(space);
+
+  const themesSection = `<section class="admin-section" id="admin-themes">
+    <h2>Thèmes</h2>
+    <form method="post" action="/api/themes" class="admin-create">
+      <input name="name" placeholder="Nom du thème" required autocomplete="off" aria-label="Nom du nouveau thème">
+      <label class="color-field">Couleur <input type="color" name="color" value="${DEFAULT_THEME_COLORS[0]}"></label>
+      <button type="submit" class="btn">Créer</button>
+      ${ADMIN_RETURN}
+    </form>
+    ${
+      space.themes.length
+        ? `<ul class="admin-list">${renderThemeRows(space)}</ul>`
+        : '<p class="admin-empty">Aucun thème — créez-en un ci-dessus.</p>'
+    }
+    <h3 class="admin-subtitle">Répartition thème × domaine</h3>
+    ${renderMatrix(space)}
+  </section>`;
+
+  const domainsSection = `<section class="admin-section" id="admin-domains">
+    <h2>Domaines</h2>
+    <form method="post" action="/api/domains" class="admin-create">
+      <input name="name" placeholder="Nom du domaine" required autocomplete="off" aria-label="Nom du nouveau domaine">
+      <button type="submit" class="btn">Créer</button>
+      ${ADMIN_RETURN}
+    </form>
+    ${
+      space.domainList.length
+        ? `<div class="admin-table-scroll"><table class="admin-table" id="admin-domains-table">
+            <thead><tr><th scope="col">Nom</th><th scope="col">URL</th><th scope="col">Thèmes</th><th scope="col">Actions</th></tr></thead>
+            <tbody>${renderDomainRows(space)}</tbody>
+          </table></div>`
+        : '<p class="admin-empty">Aucun domaine — créez-en un ci-dessus.</p>'
+    }
+  </section>`;
+
+  const archivesSection = `<section class="admin-section" id="admin-archives">
+    <h2>Archives</h2>
+    <details class="admin-archives">
+      <summary>Domaines archivés (${archives.length})</summary>
+      ${
+        archives.length
+          ? `<div class="admin-table-scroll"><table class="admin-table" id="admin-archives-table">
+              <thead><tr><th scope="col">Domaine</th><th scope="col">Thèmes</th><th scope="col">Actions</th></tr></thead>
+              <tbody>${renderArchiveRows(space, archives)}</tbody>
+            </table></div>`
+          : '<p class="admin-empty">Aucun domaine archivé.</p>'
+      }
+    </details>
+  </section>`;
+
+  return renderShell(
+    space,
+    `<div class="admin">${themesSection}${domainsSection}${archivesSection}</div>`,
+    null,
+    { title: 'Administration', admin: true }
   );
 }
 
@@ -1028,15 +1329,28 @@ app.get('/', (req, res) => {
   res.redirect(302, `/domaine/${def.slug}`);
 });
 
+// The administration page works even with an empty space, so it is reachable
+// before the first domain exists (unlike `/`, which has nothing to redirect to).
+app.get('/administration', async (req, res) => {
+  try {
+    res.type('html').send(await renderAdminPage(req.space));
+  } catch (err) {
+    console.error('[docdoc] page d\u2019administration :', err.message);
+    res.status(500).send('Administration indisponible');
+  }
+});
+
 app.get('/domaine/:slug', (req, res) => {
   const domain = findDomainBySlug(req.space, req.params.slug);
   if (!domain) return res.status(404).send('Domaine introuvable');
+  ensureDefaultProject(req.space, domain);
   res.type('html').send(renderPage(req.space, domain, expandIdsFor(domain, req)));
 });
 
 app.get('/domaine/:slug/outline-fragment', (req, res) => {
   const domain = findDomainBySlug(req.space, req.params.slug);
   if (!domain) return res.status(404).send('Domaine introuvable');
+  ensureDefaultProject(req.space, domain);
   res.type('html').send(renderOutline(domain, domain.slug, expandIdsFor(domain, req)));
 });
 
@@ -1093,7 +1407,10 @@ app.delete('/domaine/:slug/api/nodes/:id', (req, res) => {
   const domain = domainFromReq(req, res);
   if (!domain) return;
   if (!deleteNode(domain, req.params.id)) return res.status(404).send('Noeud introuvable');
-  persistDomain(req.space, domain);
+  // Deleting the last line would leave an outline no gesture can fill: the
+  // response already carries the replacement line (design D9). The helper writes
+  // the domain; otherwise the deletion itself must be persisted.
+  if (!ensureDefaultProject(req.space, domain)) persistDomain(req.space, domain);
   res.type('html').send(renderOutline(domain, domain.slug, expandIdsFor(domain, req)));
 });
 
@@ -1154,8 +1471,11 @@ app.post('/api/domains', (req, res) => {
   const domain = makeDomain(req.space, name, []);
   req.space.domains.set(domain.id, domain);
   rebuildDomainList(req.space);
-  persistDomain(req.space, domain);
-  res.redirect(302, `/domaine/${domain.slug}`);
+  // A domain never starts empty: a root line is the only creation point of the
+  // outline now that the "+ Nouveau projet" button is gone. The helper writes
+  // the domain, so an explicit write is only needed when it did nothing.
+  if (!ensureDefaultProject(req.space, domain)) persistDomain(req.space, domain);
+  redirectAfter(req, res, '/administration');
 });
 
 app.post('/api/domains/:id/rename', (req, res) => {
@@ -1167,7 +1487,7 @@ app.post('/api/domains/:id/rename', (req, res) => {
   domain.slug = slugify(req.space, name, domain.id);
   rebuildDomainList(req.space);
   persistDomain(req.space, domain);
-  res.redirect(302, `/domaine/${domain.slug}`);
+  redirectAfter(req, res, `/domaine/${domain.slug}`);
 });
 
 app.post('/api/domains/:id/archive', async (req, res) => {
@@ -1180,7 +1500,16 @@ app.post('/api/domains/:id/archive', async (req, res) => {
     storage.domainKey(req.space.userId, domain.id),
     storage.archiveKey(req.space.userId, domain.id)
   );
-  res.redirect(302, '/');
+  redirectAfter(req, res, '/');
+});
+
+app.post('/api/domains/:id/move', (req, res) => {
+  const domain = findDomainById(req.space, req.params.id);
+  if (!domain) return res.status(404).send('Domaine introuvable');
+  const direction = req.body.dir === 'up' ? 'up' : req.body.dir === 'down' ? 'down' : null;
+  if (!direction) return res.status(400).send('Direction requise');
+  moveDomain(req.space, domain, direction);
+  redirectAfter(req, res, '/administration');
 });
 
 /* ------------------------------------------------------------------ */
@@ -1194,7 +1523,7 @@ app.post('/api/themes', (req, res) => {
   const color = typeof req.body.color === 'string' && req.body.color ? req.body.color : nextThemeColor(req.space);
   req.space.themes.push({ id: genId(), name, color });
   persistThemes(req.space);
-  res.redirect(302, backTo(req));
+  redirectAfter(req, res, backTo(req));
 });
 
 app.post('/api/themes/:id/rename', (req, res) => {
@@ -1209,7 +1538,7 @@ app.post('/api/themes/:id/rename', (req, res) => {
   const color = typeof req.body.color === 'string' && req.body.color ? req.body.color : theme.color;
   theme.color = color;
   persistThemes(req.space);
-  res.redirect(302, backTo(req));
+  redirectAfter(req, res, backTo(req));
 });
 
 app.post('/api/themes/:id/delete', async (req, res) => {
@@ -1227,7 +1556,33 @@ app.post('/api/themes/:id/delete', async (req, res) => {
   if (changed) rebuildDomainList(req.space);
   persistThemes(req.space);
   await req.space.writeQueue;
-  res.redirect(302, backTo(req));
+  redirectAfter(req, res, backTo(req));
+});
+
+app.post('/api/themes/:id/move', (req, res) => {
+  const theme = findThemeById(req.space, req.params.id);
+  if (!theme) return res.status(404).send('Thème introuvable');
+  const direction = req.body.dir === 'up' ? 'up' : req.body.dir === 'down' ? 'down' : null;
+  if (!direction) return res.status(400).send('Direction requise');
+  moveTheme(req.space, theme, direction);
+  redirectAfter(req, res, '/administration');
+});
+
+// The matrix posts one cell at a time; the domain page's label picker uses the
+// domain-scoped route below. Both go through setDomainLabel.
+app.post('/api/themes/:id/labels', (req, res) => {
+  const theme = findThemeById(req.space, req.params.id);
+  if (!theme) return res.status(404).send('Thème introuvable');
+  const domain = findDomainById(req.space, typeof req.body.domainId === 'string' ? req.body.domainId : '');
+  if (!domain) return res.status(404).send('Domaine introuvable');
+  const action = req.body.action === 'attach' || req.body.action === 'detach' ? req.body.action : null;
+  if (!action) return res.status(400).send('Action requise');
+  if (!setDomainLabel(req.space, domain, theme.id, action)) return res.status(404).send('Thème introuvable');
+  // The sidebar and the matrix read the domain list's snapshot: a detach
+  // replaces the labels array, so the snapshot must be rebuilt to reflect it.
+  rebuildDomainList(req.space);
+  persistDomain(req.space, domain);
+  redirectAfter(req, res, '/administration');
 });
 
 app.post('/domaine/:slug/api/labels', (req, res) => {
@@ -1237,14 +1592,59 @@ app.post('/domaine/:slug/api/labels', (req, res) => {
   const themeId = typeof req.body.themeId === 'string' ? req.body.themeId : '';
   if (!action || !themeId) return res.status(400).send('Action et thème requis');
 
-  if (action === 'attach') {
-    if (!findThemeById(req.space, themeId)) return res.status(404).send('Thème introuvable');
-    if (!domain.labels.includes(themeId)) domain.labels.push(themeId);
-  } else {
-    domain.labels = domain.labels.filter((id) => id !== themeId);
+  if (!setDomainLabel(req.space, domain, themeId, action)) {
+    return res.status(404).send('Thème introuvable');
   }
+  // Same snapshot concern as the matrix route: a detach replaces `labels`.
+  rebuildDomainList(req.space);
   persistDomain(req.space, domain);
-  res.redirect(302, `/domaine/${domain.slug}`);
+  if (req.headers['hx-request']) {
+    // Bar + sidebar in the same response: labels are the sidebar's grouping key,
+    // so a fresh bar with a stale sidebar would be a visible contradiction.
+    const nav = `<nav class="sidebar-nav" id="sidebar-nav" hx-swap-oob="outerHTML">${renderSidebarNav(req.space, domain.slug)}</nav>`;
+    return res.type('html').send(renderLabelsBar(req.space, domain) + nav);
+  }
+  redirectAfter(req, res, `/domaine/${domain.slug}`);
+});
+
+/* ------------------------------------------------------------------ */
+/* Archived domains (archives section of the administration page)      */
+/* ------------------------------------------------------------------ */
+
+app.post('/api/archives/:id/restore', async (req, res) => {
+  const id = String(req.params.id);
+  const key = storage.archiveKey(req.space.userId, id);
+  const parsed = await storage.readJson(key);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return res.status(404).send('Archive introuvable');
+  }
+  if (parsed.id !== id || !Array.isArray(parsed.projects)) {
+    return res.status(404).send('Archive introuvable');
+  }
+  if (req.space.domains.has(id)) return res.status(409).send('Domaine déjà actif');
+
+  const domain = normalizeDomain(req.space.themes, parsed);
+  // The archived slug may belong to an active domain now: regenerate it, and
+  // append the restored domain after the existing ones.
+  domain.slug = slugify(req.space, domain.name, domain.id);
+  domain.order = nextOrder(req.space);
+  req.space.domains.set(domain.id, domain);
+  rebuildDomainList(req.space);
+  persistDomain(req.space, domain);
+  // Write the active object *before* deleting the archive: an interruption then
+  // leaves a purgeable copy, never a lost domain (design D5).
+  await req.space.writeQueue;
+  await storage.deleteObject(key);
+  redirectAfter(req, res, '/administration');
+});
+
+app.post('/api/archives/:id/purge', async (req, res) => {
+  const id = String(req.params.id);
+  const key = storage.archiveKey(req.space.userId, id);
+  const parsed = await storage.readJson(key);
+  if (!parsed) return res.status(404).send('Archive introuvable');
+  await storage.deleteObject(key);
+  redirectAfter(req, res, '/administration');
 });
 
 /* ------------------------------------------------------------------ */
