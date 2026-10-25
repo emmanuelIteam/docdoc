@@ -1,13 +1,17 @@
 'use strict';
 
-// End-to-end checks of the outline's keyboard indentation, in a real browser.
+// End-to-end checks of the outline's indentation in a real browser: keyboard
+// reindentation and the indentation step on narrow screens.
 //
-// These cover the manual checklist of openspec/changes/tab-indents-line
-// (tasks 6.1 to 6.9): Tab / Shift+Tab while editing a title and while a line is
-// selected, the caret and the typed text surviving the reindent, the silent
-// no-op when the move is impossible (asserted as "not a single request"), and —
-// the regression that motivated this suite — the context menu still working
-// after the outline has been re-rendered.
+// The keyboard cases cover the manual checklist of
+// openspec/changes/tab-indents-line (tasks 6.1 to 6.9): Tab / Shift+Tab while
+// editing a title and while a line is selected, the caret and the typed text
+// surviving the reindent, the silent no-op when the move is impossible
+// (asserted as "not a single request"), and — the regression that motivated
+// this suite — the context menu still working after the outline has been
+// re-rendered. The responsive cases (section 7) cover
+// openspec/changes/halve-indent-on-narrow-screens: below 640px the indentation
+// step is halved, without changing depths or the display order.
 //
 // The application runs in this process, against a throwaway data directory, so
 // the one-time code (written to the log by the development mailer) can be
@@ -93,6 +97,37 @@ const LINES_FIXTURE = {
     },
   ],
   displayOrder: ['a', 'b1', 'b2'],
+};
+
+// Three nested levels (depths 0, 1 and 2), used by the responsive indentation
+// checks in section 7. Kept apart from the fixtures above so the existing
+// keyboard tests start from the same trees as before.
+const INDENT_FIXTURE = {
+  id: DOMAIN_ID,
+  name: 'E2E',
+  slug: 'e2e',
+  order: 0,
+  labels: ['theme-e2e'],
+  projects: [
+    {
+      id: 'a',
+      title: 'Tâche A',
+      status: 'todo',
+      collapsed: false,
+      children: [
+        {
+          id: 'b',
+          title: 'Tâche B',
+          status: 'todo',
+          collapsed: false,
+          children: [
+            { id: 'c', title: 'Tâche C', status: 'todo', collapsed: false, children: [] },
+          ],
+        },
+      ],
+    },
+  ],
+  displayOrder: ['a', 'b', 'c'],
 };
 
 fs.writeFileSync(path.join(DATA_DIR, `${DOMAIN_ID}.json`), JSON.stringify(FIXTURE));
@@ -477,4 +512,87 @@ test('4.4 le bouton « ← » du menu garde la ligne sur sa ligne', async ({ pag
   await expect(line(page, 'b2')).toHaveAttribute('data-depth', '0');
   await expect(line(page, 'b2')).toHaveAttribute('data-parent', '');
   expect(await rowIds(page)).toEqual(['a', 'b1', 'b2']);
+});
+
+/* ------------------------------------------------------------------ */
+/* 7. Indentation step vs window width                                */
+/*    (openspec/changes/halve-indent-on-narrow-screens)                */
+/* ------------------------------------------------------------------ */
+
+// The computed left margin of every displayed line, keyed by node id. The
+// indentation is applied by CSS (`.line { margin-left: depth * step }`), so the
+// computed value proves both the step and the depth it was derived from.
+const lineMargins = (page) =>
+  page.locator('#outline .line').evaluateAll((rows) =>
+    Object.fromEntries(
+      rows.map((row) => [row.dataset.id, parseFloat(getComputedStyle(row).marginLeft)])
+    )
+  );
+
+// What a resize must not change: the depth, the parent and the display order.
+const outlineLayout = (page) =>
+  page.locator('#outline .line').evaluateAll((rows) =>
+    rows.map((row) => ({
+      id: row.dataset.id,
+      depth: row.dataset.depth,
+      parent: row.dataset.parent,
+    }))
+  );
+
+async function expectMargins(page, expected) {
+  const actual = await lineMargins(page);
+  for (const [id, px] of Object.entries(expected)) {
+    expect(actual, `marge calculée de la ligne ${id}`).toHaveProperty(id);
+    expect(actual[id]).toBeCloseTo(px, 3);
+  }
+}
+
+test('7.1 pas plein au-dessus du seuil de 640 px', async ({ page }) => {
+  await resetDomainTo(INDENT_FIXTURE);
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto(domainPath);
+
+  await expectMargins(page, { a: 0, b: 25.6, c: 51.2 });
+});
+
+test('7.2 pas réduit de moitié à 640 px et en dessous', async ({ page }) => {
+  await resetDomainTo(INDENT_FIXTURE);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(domainPath);
+
+  await expectMargins(page, { a: 0, b: 12.8, c: 25.6 });
+});
+
+test('7.3 le seuil de 640 px est inclusif', async ({ page }) => {
+  await resetDomainTo(INDENT_FIXTURE);
+  await page.goto(domainPath);
+
+  await page.setViewportSize({ width: 640, height: 720 });
+  await expectMargins(page, { c: 25.6 });
+
+  await page.setViewportSize({ width: 641, height: 720 });
+  await expectMargins(page, { c: 51.2 });
+});
+
+test('7.4 la bascule suit le redimensionnement, sans rechargement', async ({ page }) => {
+  await resetDomainTo(INDENT_FIXTURE);
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto(domainPath);
+
+  const before = await outlineLayout(page);
+  await expectMargins(page, { a: 0, b: 25.6, c: 51.2 });
+
+  // A reload would wipe this marker; a media query must not need one.
+  await page.evaluate(() => {
+    window.__noReload = true;
+  });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => window.__noReload)).toBe(true);
+  await expectMargins(page, { a: 0, b: 12.8, c: 25.6 });
+  expect(await outlineLayout(page)).toEqual(before);
+
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await expectMargins(page, { a: 0, b: 25.6, c: 51.2 });
+  expect(await outlineLayout(page)).toEqual(before);
 });
