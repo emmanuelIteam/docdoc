@@ -19,7 +19,7 @@ provider "scaleway" {
 variable "app_image" {
   description = "Image Docker de l'application. Le dépôt Docker Hub emmanuel7044/docdoc ne publie que les tags 1.0 et 1.1 : le tag 2.0, référencé par une version antérieure de ce fichier, n'existe pas."
   type        = string
-  default     = "docker.io/emmanuel7044/docdoc:1.3"
+  default     = "docker.io/emmanuel7044/docdoc:1.5"
 }
 
 variable "keep_warm" {

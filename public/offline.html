@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#2563eb">
+  <meta name="robots" content="noindex">
+  <title>Hors ligne — docdoc</title>
+  <style>
+    :root {
+      --accent: #2563eb;
+      --bg: #fafafa;
+      --card: #ffffff;
+      --border: #e4e4e7;
+      --muted: #52525b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+      background: var(--bg);
+      color: #18181b;
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      line-height: 1.5;
+    }
+    main {
+      width: min(28rem, 100%);
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: .75rem;
+      padding: 2rem;
+      text-align: center;
+    }
+    .brand {
+      display: inline-block;
+      margin-bottom: 1.25rem;
+      padding: .35rem .7rem;
+      border-radius: .5rem;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 700;
+      letter-spacing: .02em;
+    }
+    h1 { margin: 0 0 .75rem; font-size: 1.35rem; }
+    p { margin: 0 0 .5rem; color: var(--muted); }
+    button {
+      margin-top: 1.25rem;
+      border: 0;
+      border-radius: .5rem;
+      background: var(--accent);
+      color: #fff;
+      padding: .6rem 1.2rem;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover { background: #1d4ed8; }
+    .hint { margin-top: 1rem; font-size: .85rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <span class="brand">docdoc</span>
+    <h1>Vous êtes hors ligne</h1>
+    <p>docdoc a besoin d'une connexion pour charger vos projets : les domaines, les thèmes et
+       l'outline ne sont jamais copiés sur l'appareil.</p>
+    <p>Vérifiez votre connexion, puis réessayez.</p>
+    <button type="button" onclick="location.reload()">Réessayer</button>
+    <p class="hint">Cette page est servie par l'application installée, sans réseau.</p>
+  </main>
+</body>
+</html>

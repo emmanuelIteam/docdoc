@@ -7,6 +7,12 @@
 // These pages are deliberately outside the application shell (no sidebar): they
 // are what a visitor sees *before* any space is resolved, so they must render
 // without loading a single domain or theme.
+//
+// They still carry the installability metadata, so the browser discovers the
+// manifest before the first sign-in, and they load `/pwa.js` for the service
+// worker registration.
+
+const { installabilityHead } = require('./pwa-head');
 
 function escapeHtml(str) {
   return String(str)
@@ -32,6 +38,7 @@ function authShell(title, body, opts = {}) {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${escapeHtml(title)} — docdoc</title>
+  ${installabilityHead()}
   <link rel="stylesheet" href="/style.css">
 </head>
 <body class="auth-body">
@@ -40,6 +47,7 @@ function authShell(title, body, opts = {}) {
     ${body}
   </main>
   ${scripts}
+  <script src="/pwa.js"></script>
 </body>
 </html>`;
 }

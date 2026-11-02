@@ -294,8 +294,19 @@ function startRename(span, clientX, clientY, forceEnd, selectAll, caretAt) {
   input.addEventListener('blur', () => finish(true));
 }
 
+// A touch drag ends with a click on the bullet that started it (pointer capture
+// retargets the release): swallow that one, or the gesture that just moved the
+// line would also select it. The deadline keeps the flag from outliving the
+// click it targets when the browser sends none.
+let suppressClickUntil = 0;
+
 document.addEventListener('click', (e) => {
   const bullet = e.target.closest('.bullet');
+  if (bullet && suppressClickUntil > performance.now()) {
+    suppressClickUntil = 0;
+    e.preventDefault();
+    return;
+  }
   if (bullet) {
     const line = bullet.closest('.line');
     if (line) {
@@ -506,12 +517,16 @@ function resolveDropTarget(el) {
 
 // Top third -> insert as previous sibling, bottom third -> next sibling,
 // middle -> become the last child of the target line.
-function positionAt(e, line) {
+function positionAtPoint(clientY, line) {
   const rect = line.getBoundingClientRect();
-  const ratio = (e.clientY - rect.top) / rect.height;
+  const ratio = (clientY - rect.top) / rect.height;
   if (ratio < 0.25) return 'before';
   if (ratio > 0.75) return 'after';
   return 'inside';
+}
+
+function positionAt(e, line) {
+  return positionAtPoint(e.clientY, line);
 }
 
 // A drop is invalid when the target is the dragged line itself or one of its
@@ -589,19 +604,11 @@ document.addEventListener('dragover', (e) => {
   }
 });
 
-document.addEventListener('drop', (e) => {
-  if (!dragSourceId) return;
-  const target = resolveDropTarget(e.target);
-  if (!target) return;
-  if (isInvalidDrop(target)) return;
-
-  e.preventDefault();
-  clearDropIndicators();
-
+// One move request, shared by the HTML5 drop and the touch drag: same route,
+// same body, same re-render.
+function moveLine(sourceId, target, position) {
   const targetId = target.kind === 'line' ? target.line.dataset.id : null;
-  const position = target.kind === 'line' ? positionAt(e, target.line) : 'inside';
-
-  fetch(domainPath('/api/nodes/' + dragSourceId + '/move'), {
+  fetch(domainPath('/api/nodes/' + sourceId + '/move'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ targetId, position }),
@@ -611,6 +618,19 @@ document.addEventListener('drop', (e) => {
       reloadOutline();
     })
     .catch((err) => console.error('Erreur déplacement:', err));
+}
+
+document.addEventListener('drop', (e) => {
+  if (!dragSourceId) return;
+  const target = resolveDropTarget(e.target);
+  if (!target) return;
+  if (isInvalidDrop(target)) return;
+
+  e.preventDefault();
+  clearDropIndicators();
+
+  const position = target.kind === 'line' ? positionAt(e, target.line) : 'inside';
+  moveLine(dragSourceId, target, position);
 });
 
 document.addEventListener('dragend', () => {
@@ -619,6 +639,192 @@ document.addEventListener('dragend', () => {
   dragSourceId = null;
   clearDragGhost();
   clearDropIndicators();
+});
+
+/* -------------------------------------------------------------------- */
+/* Touch drag: the same move, started from the handle with a finger.    */
+/* HTML5 drag events never fire for touch, so the gesture is driven by  */
+/* Pointer Events. The drop resolution, the indicators, the refusal of  */
+/* a descendant target and the /move request are the ones the HTML5     */
+/* path already uses (see above), so both gestures stay in sync.        */
+/* -------------------------------------------------------------------- */
+
+// 8px is the usual tap tolerance: below it the gesture is a tap (select),
+// above it the line is being moved.
+const TOUCH_DRAG_THRESHOLD = 8;
+// Auto-scroll band at the top and bottom of the viewport, and its peak speed in
+// CSS pixels per animation frame (~840px/s at 60fps). Without it, a phone could
+// only move a line within the dozen rows it displays.
+const TOUCH_SCROLL_ZONE = 72;
+const TOUCH_SCROLL_STEP = 14;
+
+// The gesture in progress, if any.
+let touchDrag = null;
+// Floating clone shown above the finger.
+let touchGhost = null;
+
+function touchScrollStep(y) {
+  const bottom = window.innerHeight - TOUCH_SCROLL_ZONE;
+  if (y < TOUCH_SCROLL_ZONE) {
+    return -Math.ceil(((TOUCH_SCROLL_ZONE - y) / TOUCH_SCROLL_ZONE) * TOUCH_SCROLL_STEP);
+  }
+  if (y > bottom) {
+    return Math.ceil(((y - bottom) / TOUCH_SCROLL_ZONE) * TOUCH_SCROLL_STEP);
+  }
+  return 0;
+}
+
+// Park the ghost above the finger so the hand does not hide what is being
+// dragged, clamped to the top of the viewport.
+function placeTouchGhost(x, y) {
+  if (!touchGhost) return;
+  const height = touchGhost.offsetHeight || 0;
+  touchGhost.style.left = Math.round(x + 12) + 'px';
+  touchGhost.style.top = Math.max(8, Math.round(y - height - 16)) + 'px';
+}
+
+// Resolve the line under the finger, highlight it and remember the insertion
+// point. `target` stays null when nothing can receive the drop.
+function updateTouchTarget(x, y) {
+  clearDropIndicators();
+  touchDrag.target = null;
+  touchDrag.position = null;
+  const el = document.elementFromPoint(x, y);
+  if (!el) return;
+  const target = resolveDropTarget(el);
+  if (!target) return;
+  if (isInvalidDrop(target)) {
+    if (target.kind === 'line') target.line.classList.add('drop-invalid');
+    return;
+  }
+  touchDrag.target = target;
+  if (target.kind === 'line') {
+    touchDrag.position = positionAtPoint(y, target.line);
+    target.line.classList.add('drop-target', 'drop-' + touchDrag.position);
+  } else {
+    touchDrag.position = 'inside';
+    target.outline.classList.add('drop-root');
+  }
+}
+
+function updateTouchDrag(x, y) {
+  touchDrag.x = x;
+  touchDrag.y = y;
+  placeTouchGhost(x, y);
+  updateTouchTarget(x, y);
+}
+
+function startTouchDrag() {
+  touchDrag.active = true;
+  // The HTML5 handlers key their refusals on these two: sharing them keeps
+  // `isInvalidDrop` (self / descendant) working for the touch gesture too.
+  dragSourceId = touchDrag.line.dataset.id;
+  dragSourceLine = touchDrag.line;
+  touchDrag.line.classList.add('dragging');
+  touchGhost = buildDragGhost(touchDrag.line);
+  touchGhost.classList.add('floating');
+  placeTouchGhost(touchDrag.x, touchDrag.y);
+
+  const tick = () => {
+    if (!touchDrag || !touchDrag.active) return;
+    const dy = touchScrollStep(touchDrag.y);
+    if (dy !== 0) {
+      window.scrollBy(0, dy);
+      updateTouchTarget(touchDrag.x, touchDrag.y);
+    }
+    touchDrag.raf = requestAnimationFrame(tick);
+  };
+  touchDrag.raf = requestAnimationFrame(tick);
+}
+
+function endTouchDrag() {
+  if (!touchDrag) return;
+  if (touchDrag.raf) cancelAnimationFrame(touchDrag.raf);
+  if (touchGhost) {
+    touchGhost.remove();
+    touchGhost = null;
+  }
+  if (touchDrag.line) touchDrag.line.classList.remove('dragging');
+  if (touchDrag.bullet) {
+    touchDrag.bullet.draggable = touchDrag.wasDraggable;
+    try {
+      touchDrag.bullet.releasePointerCapture(touchDrag.pointerId);
+    } catch (err) {
+      /* the capture may already be gone */
+    }
+  }
+  clearDropIndicators();
+  dragSourceId = null;
+  dragSourceLine = null;
+  touchDrag = null;
+}
+
+document.addEventListener('pointerdown', (e) => {
+  // The mouse keeps the native HTML5 drag: mixing the two paths on one device
+  // would start two drags at once.
+  if (e.pointerType === 'mouse') return;
+  const bullet = e.target.closest('.bullet');
+  if (!bullet) return;
+  const line = bullet.closest('.line');
+  if (!line || !line.dataset.id || touchDrag) return;
+
+  touchDrag = {
+    pointerId: e.pointerId,
+    startX: e.clientX,
+    startY: e.clientY,
+    x: e.clientX,
+    y: e.clientY,
+    active: false,
+    bullet,
+    line,
+    target: null,
+    position: null,
+    raf: null,
+    wasDraggable: bullet.draggable,
+  };
+  // A native drag would compete with the pointer drag on iPadOS.
+  bullet.draggable = false;
+  try {
+    bullet.setPointerCapture(e.pointerId);
+  } catch (err) {
+    /* capture is a best effort: the document listeners still see the moves */
+  }
+});
+
+document.addEventListener('pointermove', (e) => {
+  if (!touchDrag || e.pointerId !== touchDrag.pointerId) return;
+  if (!touchDrag.active) {
+    const dx = e.clientX - touchDrag.startX;
+    const dy = e.clientY - touchDrag.startY;
+    if (Math.hypot(dx, dy) < TOUCH_DRAG_THRESHOLD) return;
+    touchDrag.x = e.clientX;
+    touchDrag.y = e.clientY;
+    startTouchDrag();
+  }
+  updateTouchDrag(e.clientX, e.clientY);
+});
+
+document.addEventListener('pointerup', (e) => {
+  if (!touchDrag || e.pointerId !== touchDrag.pointerId) return;
+  const wasDragging = touchDrag.active;
+  const sourceId = touchDrag.line.dataset.id;
+  const target = touchDrag.target;
+  const position = touchDrag.position;
+  endTouchDrag();
+
+  // A tap: let the click select the line, as it always did.
+  if (!wasDragging) return;
+  // The release still produces a click on the bullet through the capture; it
+  // must not toggle the selection that the drag deliberately left untouched.
+  suppressClickUntil = performance.now() + 400;
+  if (target && position) moveLine(sourceId, target, position);
+});
+
+// The browser took the gesture back (scroll, system gesture, view change):
+// cancel without moving anything.
+document.addEventListener('pointercancel', (e) => {
+  if (!touchDrag || e.pointerId !== touchDrag.pointerId) return;
+  endTouchDrag();
 });
 
 /* -------------------------------------------------------------------- */

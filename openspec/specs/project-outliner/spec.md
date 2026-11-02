@@ -43,15 +43,28 @@ The system SHALL allow each line to be collapsed to hide its children and expand
 - **THEN** the node remains collapsed
 
 ### Requirement: Reveal a selection button on hover
-The system SHALL show a selection button on a line when the pointer hovers over it.
+
+Le système SHALL afficher le bouton de sélection d'une ligne lorsque le pointeur la survole. Il SHALL le garder visible sans survol lorsque la fenêtre fait 640 px de large ou moins, ou lorsque l'appareil ne dispose pas d'un pointeur capable de survol ; dans ce cas, la cible tactile du bouton SHALL mesurer au moins 24 × 24 px. Sur un écran large doté d'un pointeur, le bouton SHALL se cacher dès que le pointeur quitte la ligne.
 
 #### Scenario: Selection button appears on hover
 - **WHEN** the pointer hovers over a line
 - **THEN** a selection button becomes visible on that line
 
 #### Scenario: Selection button hides when pointer leaves
-- **WHEN** the pointer moves off the line
-- **THEN** the selection button is no longer visible
+- **WHEN** le pointeur quitte la ligne dans une fenêtre de plus de 640 px de large dotée d'un pointeur capable de survol
+- **THEN** le bouton de sélection n'est plus visible
+
+#### Scenario: Le bouton reste visible sans survol sur un écran étroit
+- **WHEN** la fenêtre fait 390 px de large et qu'aucun survol ne se produit
+- **THEN** le bouton de sélection de chaque ligne est visible, et sa cible tactile mesure au moins 24 × 24 px
+
+#### Scenario: Le bouton reste visible sur un appareil sans survol
+- **WHEN** l'appareil ne dispose pas d'un pointeur capable de survol, même si la fenêtre est large
+- **THEN** le bouton de sélection de chaque ligne est visible sans survol
+
+#### Scenario: Le seuil de 640 px est inclusif
+- **WHEN** la fenêtre fait exactement 640 px de large
+- **THEN** le bouton est visible sans survol ; à 641 px sur un écran doté d'un pointeur, il n'apparaît qu'au survol
 
 ### Requirement: Keep the selection button in front of the text without shifting it
 The selection button SHALL be positioned before (in front of) the line's title text, and its appearance SHALL NOT rearrange, move, or shift the line's text or the text of neighboring lines.
@@ -115,11 +128,31 @@ The system SHALL allow a line that has children to be collapsed or expanded by d
 - **THEN** the node's state is unchanged
 
 ### Requirement: Render lines with compact vertical spacing
-The system SHALL render outline lines with reduced vertical spacing so the outline is compact.
+Le système SHALL afficher les lignes de l'outline avec un espacement vertical compact lorsque la largeur de la fenêtre est supérieure à 640 px, et SHALL donner à chaque ligne une hauteur d'au moins 2,75 rem (44 px à la taille de police par défaut de 16 px) lorsque cette largeur est inférieure ou égale à 640 px, afin que chaque ligne offre une cible tactile utilisable au doigt. La hauteur SHALL être une hauteur minimale : une ligne dont le titre revient sur plusieurs lignes SHALL grandir au-delà de 2,75 rem sans que son texte soit tronqué. L'espacement SHALL être purement visuel : la profondeur portée par chaque ligne (`data-depth`), son parent (`data-parent`), l'ordre d'affichage et la hiérarchie SHALL rester inchangés. Le changement de hauteur SHALL suivre un redimensionnement de la fenêtre sans rechargement de la page.
 
-#### Scenario: Lines are compactly spaced
-- **WHEN** the outline is rendered
-- **THEN** the vertical spacing between adjacent lines is kept minimal
+#### Scenario: Lignes compactes sur un écran large
+- **WHEN** la fenêtre fait 1280 px de large
+- **THEN** chaque ligne conserve la hauteur compacte actuelle, d'environ 21 px (à la taille de police par défaut de 16 px), et l'espacement vertical entre lignes voisines reste minimal
+
+#### Scenario: Hauteur tactile sur un écran étroit
+- **WHEN** la fenêtre fait 390 px de large
+- **THEN** chaque ligne mesure au moins 44 px de haut, son titre est centré verticalement, et deux lignes voisines ne se chevauchent pas
+
+#### Scenario: Le seuil de 640 px est inclusif
+- **WHEN** la fenêtre fait exactement 640 px de large
+- **THEN** chaque ligne mesure au moins 44 px de haut ; à 641 px, elle retrouve la hauteur compacte
+
+#### Scenario: Un titre sur plusieurs lignes n'est pas tronqué
+- **WHEN** un titre revient sur plusieurs lignes dans une fenêtre étroite
+- **THEN** la ligne grandit au-delà de 44 px et affiche le titre entier, sans troncature ni ellipse
+
+#### Scenario: La profondeur, le parent et l'ordre sont inchangés
+- **WHEN** l'espacement change à cause de la largeur de la fenêtre
+- **THEN** chaque ligne conserve son `data-depth`, son `data-parent` et sa place dans l'ordre affiché ; seule sa hauteur change
+
+#### Scenario: La bascule suit un redimensionnement sans rechargement
+- **WHEN** la fenêtre est redimensionnée de 1280 px à 390 px puis de nouveau à 1280 px
+- **THEN** les lignes passent de la hauteur compacte à la hauteur tactile puis reviennent à la hauteur compacte, sans rechargement de la page ni requête au serveur
 
 ### Requirement: Select a line with its sub-lines and narrow to the head line
 The system SHALL select a line together with all of its sub-lines (its entire descendant subtree) when the user clicks the line's selection button, and SHALL highlight every selected line. The context menu SHALL be shown for the selected head line only and not for its sub-lines. Clicking the selection button of the already-selected head line SHALL narrow the selection so that only the head line stays selected and its sub-lines are deselected. Clicking the selection button of the narrowed head line once more SHALL re-select the head line together with all of its sub-lines, so that repeated clicks on the head line toggle the selection between the whole group and the head line alone.
@@ -149,7 +182,8 @@ The system SHALL select a line together with all of its sub-lines (its entire de
 - **THEN** only that line is selected
 
 ### Requirement: Drag a task to move it into another task
-The system SHALL let the user begin a drag only by pressing and moving a line's selection button, SHALL represent the dragged line together with its subtree as the drag ghost, SHALL highlight a valid drop target under the pointer and show whether the line would be inserted above it, below it, or as its last child, SHALL reject a drop onto the dragged line or onto one of its descendants, and SHALL re-render the outline after a successful drop.
+
+Le système SHALL permettre de déplacer une ligne, avec tout son sous-arbre, en pressant puis en faisant glisser son bouton de sélection, aussi bien au pointeur (glisser-déposer natif) qu'au doigt (glisser tactile). Un glisser tactile SHALL n'être reconnu qu'après un déplacement d'au moins 8 px ; en deçà, le geste SHALL rester un tap et SHALL sélectionner la ligne sans la déplacer. Pendant un glisser tactile, le système SHALL afficher un fantôme de la ligne et de son sous-arbre suivant le doigt, SHALL faire défiler la page automatiquement lorsque le doigt approche du bord haut ou bas de la fenêtre, SHALL indiquer la cible valide et la position d'insertion (au-dessus, en dessous, ou comme dernier enfant), SHALL masquer le menu contextuel de la ligne glissée, SHALL refuser un dépôt sur la ligne déplacée ou l'un de ses descendants, SHALL annuler sans aucune modification un glisser interrompu par le navigateur ou relâché hors d'une cible, et SHALL re-rendre l'outline après un dépôt réussi.
 
 #### Scenario: Drag starts only from the selection button
 - **WHEN** the user presses the selection button on a line and then moves the pointer
@@ -174,6 +208,30 @@ The system SHALL let the user begin a drag only by pressing and moving a line's 
 #### Scenario: The outline re-renders after a successful drop
 - **WHEN** a valid drop completes
 - **THEN** the drag indicators are cleared and the outline is re-rendered with the line in its new place
+
+#### Scenario: Un glisser tactile déplace la ligne et son sous-arbre
+- **WHEN** sur un appareil tactile, l'utilisateur presse la poignée d'une ligne sélectionnée, déplace le doigt d'au moins 8 px puis le relâche sur une autre ligne
+- **THEN** la requête de déplacement porte la cible et la position indiquées, et l'outline re-rendue affiche la ligne déplacée, avec ses sous-lignes, à son nouvel emplacement
+
+#### Scenario: Un tap sur la poignée sélectionne sans déplacer
+- **WHEN** l'utilisateur presse puis relâche la poignée en déplaçant le doigt de moins de 8 px
+- **THEN** la sélection change comme aujourd'hui et aucune requête de déplacement n'est envoyée
+
+#### Scenario: Le fantôme suit le doigt pendant un glisser tactile
+- **WHEN** un glisser tactile est en cours
+- **THEN** un fantôme de la ligne et de son sous-arbre est affiché au doigt, et aucune ligne n'est déplacée avant le relâchement
+
+#### Scenario: Le défilement automatique rend une cible hors écran atteignable
+- **WHEN** l'utilisateur maintient le doigt près du bord bas de la fenêtre pendant un glisser tactile
+- **THEN** la page défile automatiquement et une ligne initialement hors de l'écran peut devenir la cible du dépôt
+
+#### Scenario: Le menu contextuel est masqué pendant le glisser
+- **WHEN** le menu contextuel de la ligne sélectionnée est ouvert au début d'un glisser tactile
+- **THEN** il est masqué pendant toute la durée du glisser et ne peut pas intercepter la cible du dépôt
+
+#### Scenario: Un glisser interrompu ne change rien
+- **WHEN** un glisser tactile est annulé par le navigateur ou relâché hors de toute ligne de l'outline
+- **THEN** aucune requête de déplacement n'est envoyée et les indicateurs de dépôt sont effacés
 
 ### Requirement: Address each line as a stable anchor
 Le système SHALL rendre chaque ligne de l'outline avec un attribut `id` unique et stable égal à `node-<id>` où `<id>` est l'id persistant du nœud, afin que chaque ligne projet ou tâche puisse être ciblée comme fragment d'ancre (`#node-<id>`) sur la page du domaine. L'id d'ancre SHALL être dérivé de l'id du nœud et SHALL rester inchangé lors des renommages et des re-rendus.
@@ -228,7 +286,8 @@ Le système SHALL proposer, dans le menu contextuel de chaque ligne, une action 
 - **THEN** un lien incluant le paramètre de révélation et le fragment d'ancre de la ligne (ex. `/domaine/<slug>?reveal=<id>#node-<id>`) est copié dans le presse-papiers
 
 ### Requirement: Document line interactions in a page footer
-Le système SHALL rendre le paragraphe de documentation d'utilisation des lignes de l'outline dans un pied de page qui s'étend sur toute la largeur de la page, sous le panneau latéral et la colonne de contenu, au lieu de la zone d'actions située au-dessus de l'outline. La documentation SHALL décrire les interactions prises en charge : bouton de sélection et menu révélés au survol, sélection d'une ligne avec ses sous-lignes par un clic, second clic sur la tête pour ne sélectionner que celle-ci, fermeture du menu et de la sélection quand la souris quitte la ligne, double-clic sur le bouton pour replier/déplier, glisser depuis le bouton pour déplacer, clic sur un titre pour le renommer, indentation d'une ligne par la touche `Tab` et désindentation par `MAJ+Tab`, et collage d'une étiquette de thème sur le domaine.
+
+Le système SHALL rendre le paragraphe de documentation d'utilisation des lignes de l'outline dans un pied de page qui s'étend sur toute la largeur de la page, sous le panneau latéral et la colonne de contenu, au lieu de la zone d'actions située au-dessus de l'outline. La documentation SHALL décrire les interactions prises en charge : bouton de sélection et menu révélés au survol, bouton restant visible sans survol sur un écran étroit, sélection d'une ligne avec ses sous-lignes par un clic, second clic sur la tête pour ne sélectionner que celle-ci, fermeture du menu et de la sélection quand la souris quitte la ligne, double-clic sur le bouton pour replier/déplier, glisser depuis le bouton pour déplacer, poignée affichée sur la ligne sélectionnée et glisser de cette poignée au doigt pour déplacer la ligne, clic sur un titre pour le renommer, indentation d'une ligne par la touche `Tab` et désindentation par `MAJ+Tab`, et collage d'une étiquette de thème sur le domaine.
 
 #### Scenario: The footer documents line interactions
 - **WHEN** la page d'un domaine est rendue
@@ -249,6 +308,10 @@ Le système SHALL rendre le paragraphe de documentation d'utilisation des lignes
 #### Scenario: The footer is shown even without a domain
 - **WHEN** la page est rendue alors qu'aucun domaine n'existe
 - **THEN** le pied de page de documentation est tout de même affiché en bas de page
+
+#### Scenario: Le pied de page documente la poignée et le glisser au doigt
+- **WHEN** la page d'un domaine est rendue
+- **THEN** le paragraphe de documentation mentionne la poignée affichée sur la ligne sélectionnée et le fait de la faire glisser au doigt pour déplacer la ligne
 
 ### Requirement: Identify a line's subtree by ancestry in the flat outline
 
@@ -297,4 +360,28 @@ Le système SHALL afficher les lignes de l'outline avec un pas d'indentation de 
 #### Scenario: La bascule suit un redimensionnement sans rechargement
 - **WHEN** la fenêtre est redimensionnée de 1280 px à 390 px puis de nouveau à 1280 px
 - **THEN** le pas d'indentation devient la moitié puis redevient plein, sans rechargement de la page ni requête au serveur
+
+### Requirement: Show a drag handle on the selected line
+
+Le système SHALL afficher, à la tête de la ligne sélectionnée, une poignée de glisser — un symbole de préhension à six points — à la place du point de sélection, afin de signaler que la ligne peut être saisie pour être déplacée. Les sous-lignes sélectionnées SHALL conserver le point. La poignée SHALL occuper le même emplacement que le point : la bascule entre les deux glyphes SHALL ne décaler ni le titre de la ligne ni celui des lignes voisines. La poignée SHALL être remplacée par le point dès que la sélection est levée.
+
+#### Scenario: La ligne de tête sélectionnée montre une poignée
+- **WHEN** une ligne est sélectionnée comme tête
+- **THEN** son bouton de tête affiche la poignée à six points, et le point de sélection n'est pas affiché
+
+#### Scenario: Les sous-lignes sélectionnées gardent le point
+- **WHEN** une ligne et ses sous-lignes sont sélectionnées ensemble
+- **THEN** les sous-lignes affichent le point et seule la ligne de tête affiche la poignée
+
+#### Scenario: La poignée disparaît avec la sélection
+- **WHEN** la sélection de la ligne de tête est levée
+- **THEN** la poignée est remplacée par le point, dans le même emplacement
+
+#### Scenario: La poignée ne décale pas le titre
+- **WHEN** le bouton d'une ligne passe du point à la poignée, puis de la poignée au point
+- **THEN** le titre de cette ligne et celui des lignes voisines conservent exactement la même position horizontale
+
+#### Scenario: La poignée est atteignable au doigt
+- **WHEN** une ligne est sélectionnée sur un appareil tactile ou dans une fenêtre de 640 px de large ou moins
+- **THEN** la poignée est visible sans survol et sa cible tactile mesure au moins 24 × 24 px
 

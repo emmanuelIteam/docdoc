@@ -248,10 +248,10 @@ pnpm start
 
 ## Création et enregistrement de l'image docker
 ```bash
-docker build -t emmanuel7044/docdoc:1.3 .
+docker build -t emmanuel7044/docdoc:1.5 .
 ```
 ```bash
-docker push emmanuel7044/docdoc:1.3
+docker push emmanuel7044/docdoc:1.5
 ```
 
 > Le tag poussé doit correspondre à `var.app_image` dans `main.tf`
@@ -519,6 +519,69 @@ injectés dans le conteneur : rien à saisir. Pour servir un sous-domaine plutô
 
 Retour en arrière : un apply **sans** `-var domain_name` retire l'endpoint personnalisé et
 l'enregistrement DNS. Le domaine, lui, reste enregistré et facturé.
+
+## Installer docdoc (PWA)
+
+docdoc est une **application web installable** : ouverte une fois dans un navigateur compatible, elle
+s'ajoute à l'écran d'accueil ou au bureau et s'ouvre ensuite dans sa propre fenêtre, sans barre d'URL.
+
+| Plateforme | Comment installer |
+| --- | --- |
+| Chrome / Edge (bureau, Android) | Icône d'installation de la barre d'adresse, ou **« Installer l'application »** dans le pied du panneau latéral. |
+| Safari / iOS, iPadOS | Bouton **Partager**, puis **« Sur l'écran d'accueil »**. Safari ne déclenche aucune invite native : l'application affiche la consigne à la place. |
+
+Le bouton du panneau n'apparaît que lorsqu'une installation est possible : invite native sur Chromium,
+consigne sur Safari/iOS ; il disparaît quand docdoc tourne déjà comme application installée.
+
+### Fichiers et routes
+
+| Élément | Rôle |
+| --- | --- |
+| `public/manifest.webmanifest`, servi par `GET /manifest.webmanifest` | Nom, nom court, `start_url`, portée, mode autonome, couleurs, icônes 192/512/maskable. |
+| `public/icons/*` | Icônes PNG (192, 512, maskable 512, Apple 180, favicon 32) et source SVG. |
+| `public/sw.js`, servi par `GET /sw.js` | Service worker de portée `/` : précache des actifs publics et page hors ligne. |
+| `public/pwa.js` | Enregistrement du worker, invite d'installation, bandeau de mise à jour. |
+| `public/offline.html` | Page servie quand une navigation échoue faute de réseau. |
+
+Le manifeste et `sw.js` sont servis en `Cache-Control: no-cache` : un déploiement est vu au chargement
+suivant, sans attendre l'expiration d'un cache HTTP.
+
+### Hors ligne : ce qui est mis en cache, et ce qui ne l'est pas
+
+Le service worker ne met en cache que des **actifs publics identiques pour tous** (`style.css`,
+`app.js`, `pwa.js`, htmx, icônes, manifeste) et `offline.html`. Les navigations sont toujours demandées
+au serveur ; aucun document HTML, fragment htmx ou réponse `/auth/*` / `/api/*` n'entre dans Cache
+Storage. Une coupure réseau affiche donc la page hors ligne, jamais les projets d'un compte (ni ceux
+d'un autre compte sur un poste partagé). L'outline reste en ligne : il n'y a pas d'édition hors ligne.
+
+### Modifier un actif : incrémenter `CACHE_VERSION`
+
+Après toute modification d'un fichier précaché (`style.css`, `app.js`, `pwa.js`, `auth.js`,
+`simplewebauthn.js`, `htmx.min.js`, `manifest.webmanifest`, `offline.html`, une icône), **incrémenter
+`CACHE_VERSION`** dans `public/sw.js` (`v1` → `v2`). Sans cela, les navigateurs déjà équipés peuvent
+continuer à servir l'ancienne copie jusqu'à l'expiration ou la fermeture de tous les onglets. Le
+nouveau worker prend la main et affiche un bandeau **« Nouvelle version disponible »** avec un bouton
+**Recharger** : le rechargement n'est jamais imposé, pour ne pas perdre une saisie en cours.
+
+Les icônes se régénèrent avec `pwsh -File scripts/generate-pwa-icons.ps1` (Windows, outil ponctuel :
+les PNG produits sont versionnés, rien n'est généré au démarrage).
+
+### Retirer la PWA
+
+Supprimer les balises de `pwa-head.js`, les routes `/manifest.webmanifest` et `/sw.js`, puis
+redéployer : l'application redevient un site ordinaire. Les navigateurs déjà équipés conservent le
+dernier worker (actifs statiques et page hors ligne uniquement, les navigations restant en réseau) ;
+pour effacer aussi les caches côté clients, publier un `sw.js` de retrait :
+
+```js
+self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('activate', (event) => {
+  event.waitUntil((async () => {
+    await Promise.all((await caches.keys()).map((key) => caches.delete(key)));
+    await self.registration.unregister();
+  })());
+});
+```
 
 ## Test de l'application à l'adresse suivante
 https://<nom-de-votre-conteneur>-<hash-unique>.functions.fnc.fr-par.scw.cloud

@@ -15,6 +15,7 @@ const migration = require('./migration');
 const mailer = require('./mailer');
 const passkeys = require('./passkeys');
 const { createAuth } = require('./authroutes');
+const { installabilityHead } = require('./pwa-head');
 
 const PORT = process.env.PORT || 3000;
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
@@ -49,7 +50,26 @@ const app = express();
 app.set('trust proxy', 1);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(express.static(path.join(__dirname, 'public')));
+
+// Installability files are public and declared before `express.static` so their
+// content type is exact and their caching policy is explicit: a manifest or a
+// service worker left in the HTTP cache would delay a deployment for hours.
+// `cacheControl` is disabled so the `Cache-Control` set here is the one sent.
+const PUBLIC_DIR = path.join(__dirname, 'public');
+
+app.get('/manifest.webmanifest', (req, res) => {
+  res.type('application/manifest+json');
+  res.set('Cache-Control', 'no-cache');
+  res.sendFile(path.join(PUBLIC_DIR, 'manifest.webmanifest'), { cacheControl: false });
+});
+
+app.get('/sw.js', (req, res) => {
+  res.type('text/javascript');
+  res.set('Cache-Control', 'no-cache');
+  res.sendFile(path.join(PUBLIC_DIR, 'sw.js'), { cacheControl: false });
+});
+
+app.use(express.static(PUBLIC_DIR));
 
 app.use(
   session({
@@ -851,7 +871,14 @@ function renderLine(entry, slug) {
 
   return (
     `<li class="line" id="node-${node.id}" data-id="${node.id}" data-parent="${entry.parent ? entry.parent.id : ''}" data-depth="${entry.depth}" style="--depth:${entry.depth}">` +
-    '<button class="bullet" type="button" title="Sélectionner" draggable="true">●</button>' +
+    // One button, two glyphs: the dot is the selection control, the grip tells
+    // the user the selected head line can be grabbed to move it. CSS switches
+    // them on `.line.selected-head`, so no client code keeps them in sync and
+    // the title never shifts (both share the same slot).
+    '<button class="bullet" type="button" title="Sélectionner — glisser pour déplacer" aria-label="Sélectionner la ligne" draggable="true">' +
+    '<span class="bullet-dot" aria-hidden="true">●</span>' +
+    '<span class="bullet-grip" aria-hidden="true">⠿</span>' +
+    '</button>' +
     `<span class="title ${statusCls}" data-id="${node.id}">${escapeHtml(node.title)}</span>` +
     menu +
     '</li>'
@@ -948,6 +975,10 @@ function renderSidebar(space, activeSlug, opts = {}) {
         <nav class="sidebar-extra">
           <a class="sidebar-link sidebar-admin${adminActive ? ' active' : ''}" href="/administration"${adminActive ? ' aria-current="page"' : ''}>Administration</a>
         </nav>
+        <div class="install-box" id="install-box">
+          <button type="button" class="btn-mini install-btn" id="install-btn" hidden>Installer l'application</button>
+          <p class="install-hint" id="install-hint" hidden>Partager → « Sur l'écran d'accueil »</p>
+        </div>
         <div class="session-box">
           <span class="session-email" title="${escapeHtml(space.email || '')}">${escapeHtml(space.email || '')}</span>
           <a class="btn-mini" href="/auth/passkeys" title="Gérer mes passkeys">🔑</a>
@@ -966,6 +997,7 @@ function renderShell(space, content, activeSlug, opts = {}) {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${escapeHtml(opts.title || 'Mes projets')}</title>
+  ${installabilityHead()}
   <link rel="stylesheet" href="/style.css">
 </head>
 <body class="${opts.labelsBar ? 'has-labels-bar' : ''}" data-domain-slug="${escapeHtml(activeSlug || '')}">
@@ -979,11 +1011,12 @@ function renderShell(space, content, activeSlug, opts = {}) {
       <main>${content}</main>
     </div>
     <footer class="shell-footer">
-      <p class="hint">Survolez une ligne : bouton de sélection et menu. Un clic sélectionne la ligne et ses sous-lignes ; un second clic sur la tête ne sélectionne que celle-ci. Le menu et la sélection se ferment dès que la souris quitte la ligne. Double-cliquez sur le bouton pour replier/déplier. Glissez depuis le bouton pour déplacer. Cliquez sur un titre pour le renommer ; pendant l'édition d'un titre ou sur une ligne sélectionnée, Tab indente la ligne et MAJ+Tab la désindente. Collez une étiquette sur le domaine pour le rattacher à un thème. Les thèmes et les domaines se gèrent depuis la page Administration, en pied du panneau.</p>
+      <p class="hint">Survolez une ligne : bouton de sélection et menu ; sur un écran étroit ou sur un appareil sans souris, le bouton de sélection reste visible sans survol. Un clic sélectionne la ligne et ses sous-lignes ; un second clic sur la tête ne sélectionne que celle-ci. Le menu et la sélection se ferment dès que la souris quitte la ligne. Double-cliquez sur le bouton pour replier/déplier. Glissez depuis le bouton pour déplacer ; la ligne sélectionnée affiche une poignée, que l'on peut glisser au doigt pour déplacer la ligne et ses sous-lignes. Cliquez sur un titre pour le renommer ; pendant l'édition d'un titre ou sur une ligne sélectionnée, Tab indente la ligne et MAJ+Tab la désindente. Collez une étiquette sur le domaine pour le rattacher à un thème. Les thèmes et les domaines se gèrent depuis la page Administration, en pied du panneau.</p>
     </footer>
   </div>
   <script src="/htmx.min.js"></script>
   <script src="/app.js"></script>
+  <script src="/pwa.js"></script>
 </body>
 </html>`;
 }

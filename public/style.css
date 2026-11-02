@@ -144,6 +144,13 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
 
 @media (max-width: 640px) {
   .outline { --outline-indent: .8rem; }
+  /* Touch target: on a phone a line is tapped as a whole, not as a 21px text
+     band. The row keeps its compact padding and centres its title, but grows
+     to 2.75rem (44px at the default 16px root), the fingertip-sized target of
+     WCAG 2.5.5, so two adjacent rows no longer share a band shorter than a
+     finger. `min-height`, not `height`: a wrapped title grows the row instead
+     of being clipped. */
+  .line { min-height: 2.75rem; }
 }
 
 .line {
@@ -174,10 +181,41 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
   width: .7rem;
   flex: 0 0 auto;
   visibility: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* The handle claims the gesture: without this the browser would scroll and
+     cancel the pointer stream mid-drag. No effect for a mouse. */
+  touch-action: none;
 }
 .line:hover .bullet,
 .line.selected .bullet { visibility: visible; }
 .line.selected { background: #eef2ff; }
+
+/* Drag handle: the selected head line shows a grip instead of the dot, so the
+   line reads as grabbable rather than merely selected. Both glyphs live in the
+   same slot, so switching them moves neither this title nor its neighbours'. */
+.bullet-grip { display: none; }
+.line.selected-head .bullet-dot { display: none; }
+.line.selected-head .bullet-grip { display: inline; }
+
+/* Without hover there is no other way to reach the selection button, so on a
+   narrow screen — or on any device whose pointer cannot hover — the bullet is
+   always visible and its target grows to 24x24 px (WCAG 2.2 AA, 2.5.8). The
+   44px row height comes from the touch-spacing rule above; min-height keeps the
+   target at 24px even without it. A mouse-driven desktop keeps the hover reveal
+   and the original 11.2px slot. */
+@media (max-width: 640px), (hover: none) {
+  .bullet {
+    visibility: visible;
+    width: 1.5rem;
+    min-height: 1.5rem;
+    font-size: .9rem;
+    color: #a1a1aa;
+  }
+  .line.selected .bullet { color: var(--accent); }
+  .line.selected-head .bullet { color: var(--accent-dark); }
+}
 
 /* Deep-linked line (the current URL fragment target). Visually distinct from a
    selected line so a shared link is not confused with an in-progress edit. */
@@ -262,6 +300,9 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
    All indicators use inset box-shadow on the line's own border box so they
    never shift the title or its neighbours. */
 .line.dragging { opacity: .55; }
+/* The menu of a dragged line sits right above it, under the finger, and would
+   steal the drop target resolution (it resolves to the dragged line itself). */
+.line.dragging .menu { display: none; }
 .line.drop-target { background: #eef2ff; }
 .line.drop-before { box-shadow: inset 0 2px 0 0 var(--accent); }
 .line.drop-after { box-shadow: inset 0 -2px 0 0 var(--accent); }
@@ -278,6 +319,21 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
   pointer-events: none;
   width: max-content;
   min-width: 12rem;
+}
+
+/* Touch ghost: the same clone, parked above the finger so the hand does not
+   hide what is being moved. Positioned from JS (`left` / `top`). */
+.drag-ghost.floating {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 60;
+  max-width: 80vw;
+  overflow: hidden;
+  opacity: .95;
+  background: var(--card);
+  border-radius: .4rem;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, .25);
 }
 
 /* Transient feedback toast (e.g. "Lien copié"). */
@@ -628,3 +684,48 @@ body.has-labels-bar .shell-footer { padding-bottom: 4.5rem; }
 }
 .matrix-toggle:hover { border-color: var(--accent); }
 .matrix-toggle.on { background: #eef2ff; border-color: var(--accent); color: var(--accent-dark); }
+
+/* ------------------------------------------------------------------ */
+/* Installability: the sidebar install control and the update notice   */
+/* ------------------------------------------------------------------ */
+
+.install-box { margin-bottom: .25rem; }
+.install-btn {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: .25rem .5rem;
+  border-radius: .4rem;
+  color: var(--accent-dark);
+  font-weight: 600;
+}
+/* The server renders the button `hidden`; an author `display` would otherwise
+   beat the browser's `[hidden]` rule and show an install control that cannot
+   work before `beforeinstallprompt`. */
+.install-box [hidden] { display: none; }
+.install-btn:hover { background: #eef2ff; }
+.install-hint {
+  margin: .25rem 0 0;
+  padding: .25rem .5rem;
+  font-size: .78rem;
+  color: var(--done);
+}
+
+.pwa-update {
+  position: fixed;
+  left: 50%;
+  bottom: 1.25rem;
+  transform: translateX(-50%);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  max-width: calc(100vw - 2rem);
+  padding: .6rem .9rem;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: .6rem;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, .18);
+  font-size: .9rem;
+}
+.pwa-update .btn { padding: .3rem .6rem; font-size: .85rem; }

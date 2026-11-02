@@ -11,7 +11,11 @@
 // this suite — the context menu still working after the outline has been
 // re-rendered. The responsive cases (section 7) cover
 // openspec/changes/halve-indent-on-narrow-screens: below 640px the indentation
-// step is halved, without changing depths or the display order.
+// step is halved, without changing depths or the display order. The
+// touch-spacing cases (section 8) cover
+// openspec/changes/increase-line-spacing-on-narrow-screens: below the same
+// 640px breakpoint each row is at least 44px tall, without changing depths,
+// parents or the display order.
 //
 // The application runs in this process, against a throwaway data directory, so
 // the one-time code (written to the log by the development mailer) can be
@@ -130,6 +134,48 @@ const INDENT_FIXTURE = {
   displayOrder: ['a', 'b', 'c'],
 };
 
+// One line whose title cannot fit on a single phone-width line, used by the
+// touch-spacing check in section 8: the row must grow past 44px rather than
+// clip or truncate the title. Kept apart from the fixtures above so the
+// keyboard and indentation tests start from the same trees as before.
+const WRAP_FIXTURE = {
+  id: DOMAIN_ID,
+  name: 'E2E',
+  slug: 'e2e',
+  order: 0,
+  labels: ['theme-e2e'],
+  projects: [
+    {
+      id: 'long',
+      title:
+        'Une tâche dont le titre est assez long pour revenir sur plusieurs lignes sur un téléphone',
+      status: 'todo',
+      collapsed: false,
+      children: [],
+    },
+  ],
+  displayOrder: ['long'],
+};
+
+// A long outline used by the touch auto-scroll check in section 9: enough rows
+// to need scrolling at 390x844, so a drag held near the bottom edge must scroll
+// the page to reach a target that started off-screen.
+const LONG_FIXTURE = {
+  id: DOMAIN_ID,
+  name: 'E2E',
+  slug: 'e2e',
+  order: 0,
+  labels: [],
+  projects: Array.from({ length: 30 }, (_, i) => ({
+    id: `n${i}`,
+    title: `Tâche ${i + 1}`,
+    status: 'todo',
+    collapsed: false,
+    children: [],
+  })),
+  displayOrder: Array.from({ length: 30 }, (_, i) => `n${i}`),
+};
+
 fs.writeFileSync(path.join(DATA_DIR, `${DOMAIN_ID}.json`), JSON.stringify(FIXTURE));
 fs.writeFileSync(
   path.join(DATA_DIR, 'themes.json'),
@@ -162,6 +208,24 @@ const test = base.extend({
   // passkey ceremony is far too slow (and too stateful) to repeat per test.
   page: async ({ browser }, use) => {
     const context = await browser.newContext({ storageState: STATE_FILE, baseURL: ORIGIN });
+    const page = await context.newPage();
+    try {
+      await use(page);
+    } finally {
+      await context.close();
+    }
+  },
+  // A smartphone-shaped context for the touch cases (section 9): same session,
+  // 390x844 and touch enabled, so the no-hover behaviour and the pointer-event
+  // drag are exercised the way a phone triggers them.
+  touchPage: async ({ browser }, use) => {
+    const context = await browser.newContext({
+      storageState: STATE_FILE,
+      baseURL: ORIGIN,
+      viewport: { width: 390, height: 844 },
+      hasTouch: true,
+      isMobile: true,
+    });
     const page = await context.newPage();
     try {
       await use(page);
@@ -595,4 +659,298 @@ test('7.4 la bascule suit le redimensionnement, sans rechargement', async ({ pag
   await page.setViewportSize({ width: 1280, height: 720 });
   await expectMargins(page, { a: 0, b: 25.6, c: 51.2 });
   expect(await outlineLayout(page)).toEqual(before);
+});
+
+/* ------------------------------------------------------------------ */
+/* 8. Touch height vs window width                                    */
+/*    (openspec/changes/increase-line-spacing-on-narrow-screens)      */
+/* ------------------------------------------------------------------ */
+
+// The compact height of a line at the default 16px root: a 20px title
+// (line-height 1.25) plus the 0.04rem vertical padding. Computed from
+// getBoundingClientRect so the assertion covers the whole box, not just the
+// stylesheet.
+const COMPACT_HEIGHT = 21.3;
+
+// The computed height of every displayed line, keyed by node id. The touch
+// height is applied by CSS (`.line { min-height: 2.75rem }` under the 640px
+// media query), so the measured box proves both the rule and its breakpoint.
+const lineHeights = (page) =>
+  page.locator('#outline .line').evaluateAll((rows) =>
+    Object.fromEntries(
+      rows.map((row) => [row.dataset.id, row.getBoundingClientRect().height])
+    )
+  );
+
+// Half a pixel of tolerance: `rem` values and the browser's rounding of the
+// 0.04rem padding can move the compact height by a fraction of a pixel.
+function expectCompactHeights(heights) {
+  for (const [id, height] of Object.entries(heights)) {
+    expect(height, `hauteur compacte de la ligne ${id}`).toBeCloseTo(COMPACT_HEIGHT, 0);
+  }
+}
+
+function expectTouchHeights(heights) {
+  for (const [id, height] of Object.entries(heights)) {
+    expect(height, `hauteur tactile de la ligne ${id}`).toBeGreaterThanOrEqual(44);
+    expect(height, `hauteur tactile de la ligne ${id}`).toBeLessThan(44.5);
+  }
+}
+
+test('8.1 la hauteur reste compacte sur un écran large', async ({ page }) => {
+  await resetDomainTo(INDENT_FIXTURE);
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto(domainPath);
+
+  expectCompactHeights(await lineHeights(page));
+});
+
+test('8.2 chaque ligne offre une cible tactile de 44 px à 390 px', async ({ page }) => {
+  await resetDomainTo(INDENT_FIXTURE);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(domainPath);
+
+  expectTouchHeights(await lineHeights(page));
+});
+
+test('8.3 le seuil de 640 px est inclusif pour la hauteur', async ({ page }) => {
+  await resetDomainTo(INDENT_FIXTURE);
+  await page.goto(domainPath);
+
+  await page.setViewportSize({ width: 640, height: 720 });
+  expectTouchHeights(await lineHeights(page));
+
+  await page.setViewportSize({ width: 641, height: 720 });
+  expectCompactHeights(await lineHeights(page));
+});
+
+test('8.4 la hauteur suit le redimensionnement, sans rechargement', async ({ page }) => {
+  await resetDomainTo(INDENT_FIXTURE);
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto(domainPath);
+
+  const before = await outlineLayout(page);
+  expectCompactHeights(await lineHeights(page));
+
+  // A reload would wipe this marker; a media query must not need one.
+  await page.evaluate(() => {
+    window.__noReload = true;
+  });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => window.__noReload)).toBe(true);
+  expectTouchHeights(await lineHeights(page));
+  expect(await outlineLayout(page)).toEqual(before);
+
+  await page.setViewportSize({ width: 1280, height: 720 });
+  expectCompactHeights(await lineHeights(page));
+  expect(await outlineLayout(page)).toEqual(before);
+});
+
+test('8.5 un titre long grandit la ligne au-delà de 44 px sans troncature', async ({ page }) => {
+  await resetDomainTo(WRAP_FIXTURE);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(domainPath);
+
+  const info = await line(page, 'long').evaluate((row) => {
+    const title = row.querySelector('.title');
+    return {
+      rowHeight: row.getBoundingClientRect().height,
+      titleHeight: title.getBoundingClientRect().height,
+      overflows: row.scrollHeight > row.clientHeight + 1,
+      whiteSpace: getComputedStyle(title).whiteSpace,
+      textOverflow: getComputedStyle(title).textOverflow,
+    };
+  });
+
+  expect(info.rowHeight, 'la ligne grandit pour son titre').toBeGreaterThan(44);
+  // More than two 20px title lines: the text really wrapped.
+  expect(info.titleHeight, 'le titre occupe plusieurs lignes').toBeGreaterThan(40);
+  expect(info.overflows, 'aucun contenu coupé ou débordant').toBe(false);
+  expect(info.whiteSpace).toBe('normal');
+  expect(info.textOverflow).toBe('clip');
+});
+
+/* ------------------------------------------------------------------ */
+/* 9. Touch: always-visible selection button and drag handle           */
+/*    (openspec/changes/add-touch-drag-handle)                         */
+/* ------------------------------------------------------------------ */
+
+// The touch gestures are played over CDP: Playwright exposes a tap helper but
+// no drag, and these are the events a phone actually sends. `touchBegin`
+// returns the session so a test can inspect the mid-gesture state (the invalid
+// target, the auto-scroll) before releasing.
+async function touchBegin(page, from, to, steps = 8) {
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Input.dispatchTouchEvent', {
+    type: 'touchStart',
+    touchPoints: [{ x: from.x, y: from.y }],
+  });
+  for (let i = 1; i <= steps; i++) {
+    await cdp.send('Input.dispatchTouchEvent', {
+      type: 'touchMove',
+      touchPoints: [
+        {
+          x: from.x + ((to.x - from.x) * i) / steps,
+          y: from.y + ((to.y - from.y) * i) / steps,
+        },
+      ],
+    });
+    await page.waitForTimeout(16);
+  }
+  await page.waitForTimeout(60);
+  return cdp;
+}
+
+async function touchEnd(cdp, { cancel = false } = {}) {
+  await cdp.send('Input.dispatchTouchEvent', {
+    type: cancel ? 'touchCancel' : 'touchEnd',
+    touchPoints: [],
+  });
+  await cdp.detach();
+}
+
+async function touchDrag(page, from, to, steps) {
+  const cdp = await touchBegin(page, from, to, steps);
+  await touchEnd(cdp);
+}
+
+// Every request to the move endpoint, with its JSON body.
+function watchMoves(page) {
+  const calls = [];
+  page.on('request', (request) => {
+    const { pathname } = new URL(request.url());
+    if (/\/move$/.test(pathname)) {
+      calls.push({ method: request.method(), body: request.postDataJSON() });
+    }
+  });
+  return calls;
+}
+
+// The centre of a line's selection button (the dot, or the handle once the line
+// is selected — same slot, same box).
+async function bulletCentre(page, id) {
+  const box = await line(page, id).locator('.bullet').boundingBox();
+  return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+}
+
+const titleLeft = (page, id) =>
+  line(page, id).locator('.title').evaluate((el) => el.getBoundingClientRect().left);
+
+test('9.1 la puce est visible sans survol et mesure au moins 24 × 24 px', async ({ touchPage }) => {
+  await touchPage.goto(domainPath);
+
+  const bullet = line(touchPage, 'b').locator('.bullet');
+  await expect(bullet).toBeVisible();
+  const box = await bullet.boundingBox();
+  expect(box.width, 'largeur de la cible tactile').toBeGreaterThanOrEqual(24);
+  expect(box.height, 'hauteur de la cible tactile').toBeGreaterThanOrEqual(24);
+});
+
+test('9.2 un tap sur la puce sélectionne, sans renommer et sans déplacer', async ({ touchPage }) => {
+  await touchPage.goto(domainPath);
+  const before = await titleLeft(touchPage, 'a');
+  const moves = watchMoves(touchPage);
+
+  const centre = await bulletCentre(touchPage, 'a');
+  await touchPage.touchscreen.tap(centre.x, centre.y);
+
+  await expect(line(touchPage, 'a')).toHaveClass(/selected-head/);
+  await expect(touchPage.locator('.title-input')).toHaveCount(0);
+  // The dot became a handle in the same slot: the title did not shift.
+  expect(await titleLeft(touchPage, 'a')).toBeCloseTo(before, 1);
+  expect(moves).toEqual([]);
+});
+
+test('9.3 la tête sélectionnée affiche la poignée, les sous-lignes le point', async ({ touchPage }) => {
+  await touchPage.goto(domainPath);
+  const head = await bulletCentre(touchPage, 'a');
+  await touchPage.touchscreen.tap(head.x, head.y);
+
+  await expect(line(touchPage, 'a').locator('.bullet-grip')).toBeVisible();
+  await expect(line(touchPage, 'a').locator('.bullet-dot')).toBeHidden();
+  await expect(line(touchPage, 'c').locator('.bullet-dot')).toBeVisible();
+  await expect(line(touchPage, 'c').locator('.bullet-grip')).toBeHidden();
+
+  // Another line becomes the head: the dot comes back on the previous one.
+  const other = await bulletCentre(touchPage, 'b');
+  await touchPage.touchscreen.tap(other.x, other.y);
+  await expect(line(touchPage, 'a').locator('.bullet-dot')).toBeVisible();
+  await expect(line(touchPage, 'a').locator('.bullet-grip')).toBeHidden();
+});
+
+test('9.4 un glisser de la poignée déplace la ligne avant sa cible', async ({ touchPage }) => {
+  await touchPage.goto(domainPath);
+  const from = await bulletCentre(touchPage, 'b');
+  await touchPage.touchscreen.tap(from.x, from.y);
+  await expect(line(touchPage, 'b')).toHaveClass(/selected-head/);
+
+  const moves = watchMoves(touchPage);
+  const aBox = await line(touchPage, 'a').boundingBox();
+  // Top quarter of `a`: the line must be inserted above it.
+  await touchDrag(touchPage, from, { x: aBox.x + 40, y: aBox.y + 6 });
+
+  await expect.poll(() => moves.length).toBe(1);
+  expect(moves[0].method).toBe('POST');
+  expect(moves[0].body).toEqual({ targetId: 'a', position: 'before' });
+  await expect.poll(() => rowIds(touchPage)).toEqual(['b', 'a', 'c']);
+  await expect(line(touchPage, 'b')).toHaveAttribute('data-depth', '0');
+});
+
+test('9.5 un dépôt sur son propre sous-arbre est invalide et ne déplace rien', async ({ touchPage }) => {
+  await touchPage.goto(domainPath);
+  const from = await bulletCentre(touchPage, 'a');
+  const moves = watchMoves(touchPage);
+  const cBox = await line(touchPage, 'c').boundingBox();
+
+  const cdp = await touchBegin(touchPage, from, {
+    x: cBox.x + 40,
+    y: cBox.y + cBox.height / 2,
+  });
+  // Marked invalid while the finger is still down.
+  await expect(touchPage.locator('#outline .line.drop-invalid')).toHaveCount(1);
+  await touchEnd(cdp);
+
+  await expect.poll(() => rowIds(touchPage)).toEqual(['a', 'c', 'b']);
+  expect(moves).toEqual([]);
+  await expect(touchPage.locator('.line.drop-invalid')).toHaveCount(0);
+});
+
+test('9.6 un glisser annulé ne déplace rien', async ({ touchPage }) => {
+  await touchPage.goto(domainPath);
+  const from = await bulletCentre(touchPage, 'b');
+  const moves = watchMoves(touchPage);
+  const aBox = await line(touchPage, 'a').boundingBox();
+
+  const cdp = await touchBegin(touchPage, from, { x: aBox.x + 40, y: aBox.y + 6 });
+  await expect(touchPage.locator('.line.dragging')).toHaveCount(1);
+  await touchEnd(cdp, { cancel: true });
+
+  await expect.poll(() => rowIds(touchPage)).toEqual(['a', 'c', 'b']);
+  expect(moves).toEqual([]);
+  await expect(touchPage.locator('.line.dragging')).toHaveCount(0);
+  await expect(touchPage.locator('.line.drop-target, .line.drop-invalid')).toHaveCount(0);
+});
+
+test('9.7 le doigt près du bord bas fait défiler la page pendant le glisser', async ({ touchPage }) => {
+  await resetDomainTo(LONG_FIXTURE);
+  await touchPage.goto(domainPath);
+  await touchPage.evaluate(() => window.scrollTo(0, 0));
+
+  const from = await bulletCentre(touchPage, 'n0');
+  const cdp = await touchBegin(touchPage, from, { x: from.x, y: 820 });
+  await expect
+    .poll(() => touchPage.evaluate(() => window.scrollY), { timeout: 4000 })
+    .toBeGreaterThan(0);
+  await touchEnd(cdp, { cancel: true });
+});
+
+test('9.8 sur un écran large, la puce reste révélée au survol', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto(domainPath);
+
+  const bullet = line(page, 'b').locator('.bullet');
+  await expect(bullet).toBeHidden();
+  await line(page, 'b').hover();
+  await expect(bullet).toBeVisible();
 });
