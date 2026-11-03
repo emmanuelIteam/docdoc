@@ -988,15 +988,17 @@ if (sidebarToggle) {
   });
 }
 
-// Picking a domain from the panel closes it on a phone, so the outline of the
-// chosen domain gets the whole width. The navigation below is a full page load:
-// the state is persisted, and the destination page renders already collapsed.
-// A modified click (new tab, new window) leaves the current page's panel alone,
-// and the panel's footer entries (Administration, Aide) are not domain picks.
+// Any panel entry that opens a page closes the panel on a phone, so the page
+// that was asked for gets the whole width. Every anchor in the panel is such an
+// entry — home, a domain, administration, help, passkeys — while the commands
+// that do not navigate are a button and a form, excluded by construction. The
+// navigation below is a full page load: the state is persisted, and the
+// destination page renders already collapsed. A modified click (new tab, new
+// window) leaves the current page's panel alone.
 document.addEventListener('click', (e) => {
   if (e.defaultPrevented || e.button !== 0) return;
   if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-  const link = e.target.closest && e.target.closest('.sidebar-nav a.sidebar-link');
+  const link = e.target.closest && e.target.closest('#sidebar a[href]');
   if (!link) return;
   if (!window.matchMedia(SIDEBAR_NARROW).matches) return;
   setSidebarCollapsed(true);
@@ -1177,7 +1179,12 @@ document.addEventListener('click', (e) => {
     item._label.textContent = label;
     // The pinned row uses the line's own depth, so its bullet slot and title
     // start exactly where the visible sub-tasks' bullet and title start.
-    item._row.style.setProperty('--depth', String(Number(lineEl.dataset.depth) || 0));
+    const depth = String(Number(lineEl.dataset.depth) || 0);
+    item._row.style.setProperty('--depth', depth);
+    // The same depth as an attribute, for the CSS that shifts the first-rank
+    // lines on a narrow screen: a custom property cannot be tested by a
+    // selector, and a pinned project must take the same shift as its line.
+    item._row.dataset.depth = depth;
     return item;
   }
 

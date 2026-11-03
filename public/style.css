@@ -28,8 +28,22 @@ body {
 }
 body.sidebar-collapsed .shell { grid-template-columns: 0 1fr; }
 
+/* The panel is one screen tall and pinned to the top of the window: the page
+   scrolls under it and only the domain list scrolls inside it. The bottom block
+   (Administration, Aide, installation, session) therefore stays on screen
+   whatever the number of domains; with a short list it simply sits at the
+   bottom of the window, as before. `100dvh` follows a phone's collapsing
+   toolbars; the `100vh` line above it is the fallback for browsers without
+   `dvh`. `align-self: start` keeps the panel at its own screen height instead
+   of being stretched to the full height of the page's grid row, without which
+   `position: sticky` would have no room to move. */
 .sidebar {
   width: 240px;
+  height: 100vh;
+  height: 100dvh;
+  position: sticky;
+  top: 0;
+  align-self: start;
   overflow: hidden;
   background: var(--card);
   border-right: 1px solid var(--border);
@@ -46,6 +60,7 @@ body.sidebar-collapsed .sidebar { width: 0; padding: 0; border-right: none; }
    domain links and must not collapse the panel from here. The rule separates the
    rubric from the domain list without adding a card of its own. */
 .sidebar-top {
+  flex: 0 0 auto;
   padding-bottom: .6rem;
   margin-bottom: .6rem;
   border-bottom: 1px solid var(--border);
@@ -53,6 +68,7 @@ body.sidebar-collapsed .sidebar { width: 0; padding: 0; border-right: none; }
 .sidebar-top .sidebar-home { font-weight: 600; }
 
 .sidebar-header {
+  flex: 0 0 auto;
   font-weight: 700;
   font-size: .8rem;
   color: var(--done);
@@ -61,11 +77,15 @@ body.sidebar-collapsed .sidebar { width: 0; padding: 0; border-right: none; }
   margin-bottom: .75rem;
   white-space: nowrap;
 }
+/* The only growing and scrolling part of the panel: `min-height: 0` lets it
+   shrink below its content, which is what keeps the footer inside the screen
+   instead of being pushed below it. */
 .sidebar-nav {
   display: flex;
   flex-direction: column;
   gap: .15rem;
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
 }
 .sidebar-link {
@@ -82,7 +102,14 @@ body.sidebar-collapsed .sidebar { width: 0; padding: 0; border-right: none; }
 .sidebar-link.active { background: #eef2ff; color: var(--accent-dark); font-weight: 600; }
 .sidebar-empty { color: var(--done); font-size: .85rem; padding: .25rem .5rem; }
 
-.sidebar-footer { margin-top: .75rem; border-top: 1px solid var(--border); padding-top: .75rem; }
+/* Never compressed by a long domain list: the list is the part that gives way
+   (see `min-height: 0` on `.sidebar-nav`). */
+.sidebar-footer {
+  flex: 0 0 auto;
+  margin-top: .75rem;
+  border-top: 1px solid var(--border);
+  padding-top: .75rem;
+}
 .new-domain-form { display: flex; flex-direction: column; gap: .4rem; margin-top: .5rem; }
 .new-domain-form input,
 .rename-input {
@@ -326,8 +353,16 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
   --outline-indent: 1.6rem;
 }
 
+/* Left inset the first-rank lines (the projects) give back on a narrow screen
+   (see `.line[data-depth='0']` below). Defined on the root, not on `.outline`:
+   the pinned parent-task rows of `#ancestry` live outside the outline and must
+   follow the same value to stay aligned with the line they represent. Zero on a
+   wide screen, where the content's 1.5rem gutter is the only left margin. */
+:root { --outline-first-rank-shift: 0rem; }
+
 @media (max-width: 640px) {
   .outline { --outline-indent: .8rem; }
+  :root { --outline-first-rank-shift: 1rem; }
   /* Touch target: on a phone a line is tapped as a whole, not as a 21px text
      band. The row keeps its compact padding and centres its title, but grows
      to 2.475rem (39.6px at the default 16px root): exactly 90% of the 2.75rem
@@ -354,6 +389,44 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
   scroll-margin-top: calc(var(--topbar-height, 4rem) + .5rem);
 }
 .line:hover { background: #f4f4f5; }
+
+/* First-rank lines (the projects) give back 1rem of the page's left gutter on a
+   narrow screen: at 390px a project's row starts 8px from the screen edge
+   instead of 24px, and its title at 44px instead of 60px, so the title keeps
+   16px more horizontal room (299.6px -> 315.6px, +5.3% at that width). Only
+   depth 0 moves: a task keeps its exact 0.8rem step, so the project/task gap
+   grows from 12.8px to 28.8px, which reads as the project's own level rather
+   than a steeper indentation. The 0.5rem left over keeps the hover/selection
+   background and the root drop ring off the screen edge. A negative margin, not
+   `transform` or `position`: the row's box must grow, otherwise the title would
+   overhang instead of reflowing on the extra width. The pinned project row
+   takes the same shift so it stays exactly aligned with its line
+   (`.ancestry-row` carries `data-depth` for that: it lives outside `.outline`
+   but inherits the variable from :root). */
+@media (max-width: 640px) {
+  .line[data-depth='0'],
+  .ancestry-row[data-depth='0'] {
+    margin-left: calc(-1 * var(--outline-first-rank-shift));
+  }
+
+  /* The pinned project row is outdented like its line, but the bar and its items
+     clip whatever overflows them (`.ancestry-item` clips the split label, and
+     `.ancestry` scrolls vertically). Both therefore give back the same 1rem on
+     the left and pad it back: each box starts 1rem earlier, so the row lands
+     exactly on its item's left edge — the line's left edge — while the content
+     of the other rows does not move. The bar keeps the page's width (the larger
+     basis compensates the negative margin), so it never adds a horizontal
+     scrollbar. */
+  .ancestry {
+    margin-left: calc(-1 * var(--outline-first-rank-shift));
+    padding-left: var(--outline-first-rank-shift);
+    flex-basis: calc(100% + var(--outline-first-rank-shift));
+  }
+  .ancestry-item {
+    margin-left: calc(-1 * var(--outline-first-rank-shift));
+    padding-left: var(--outline-first-rank-shift);
+  }
+}
 
 /* Selection button (revealed on hover).
    The bullet is the only leading control on a line: it selects the line (and
@@ -541,7 +614,23 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
 .line.drop-after { box-shadow: inset 0 -2px 0 0 var(--accent); }
 .line.drop-inside { box-shadow: inset 0 0 0 2px var(--accent); }
 .line.drop-invalid { background: #fef2f2; box-shadow: inset 0 0 0 2px #dc2626; }
-#outline.drop-root { box-shadow: inset 0 0 0 2px var(--accent); }
+/* Root drop ring. It is drawn by a pseudo-element rather than by a box-shadow on
+   the outline's own box: on a narrow screen the first-rank lines start left of
+   that box (`--outline-first-rank-shift`), and a ring on the box would cut
+   through their bullets. The pseudo-element is inset on the left by the same
+   shift, so its left edge follows the project rows while its right edge stays on
+   the outline's. `position: relative` only exists while dragging. */
+#outline.drop-root { position: relative; }
+#outline.drop-root::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  left: calc(-1 * var(--outline-first-rank-shift));
+  box-shadow: inset 0 0 0 2px var(--accent);
+  pointer-events: none;
+}
 
 /* Offscreen clone used as the drag image: it shows the dragged line together
    with its whole subtree (setDragImage needs a rendered element). */
@@ -552,6 +641,10 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
   pointer-events: none;
   width: max-content;
   min-width: 12rem;
+  /* A cloned first-rank line is outdented by 1rem on a narrow screen. The same
+     padding keeps the ghost's hierarchy and stops the floating ghost's
+     `overflow: hidden` from clipping that row. */
+  padding-left: var(--outline-first-rank-shift);
 }
 
 /* Touch ghost: the same clone, parked above the finger so the hand does not
@@ -682,6 +775,11 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
 }
 @media (max-width: 640px) {
   .labels-bar { right: .5rem; bottom: .5rem; padding: .3rem .4rem; }
+  /* The panel is opened over the page on a narrow screen and its session box
+     (passkeys, logout) sits at the bottom, right under the fixed bar: while the
+     panel is displayed, the bar steps aside so it cannot cover it. It comes
+     back as soon as the panel is collapsed. */
+  body:not(.sidebar-collapsed) .labels-bar { display: none; }
 }
 
 /* Reserve room on a domain page so the fixed bar never covers the last outline
@@ -991,4 +1089,15 @@ body.has-labels-bar main {
   border: 1px solid var(--border);
   border-radius: .25rem;
   background: var(--card);
+}
+
+/* Release line closing the manual: the running image's tag, quietly separated
+   from the sections above. It is the page's last element and carries no
+   decoration of its own, so a long tag simply wraps on a narrow screen. */
+.guide-version {
+  margin: 2rem 0 0;
+  padding-top: .75rem;
+  border-top: 1px solid var(--border);
+  color: var(--done);
+  font-size: .85rem;
 }

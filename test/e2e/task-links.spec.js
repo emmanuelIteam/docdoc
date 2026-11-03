@@ -61,6 +61,10 @@ function childEnv(port) {
     DOCDOC_DATA_DIR: dataDir,
     DOCDOC_ENV_FILE: path.join(dataDir, 'absent.env'),
     SESSION_SECRET: 'task-links-e2e-secret',
+    // No release tag: the Help page must report a development build. Set
+    // explicitly so a developer's shell (or a release runner) cannot leak one
+    // into the child and make the assertion depend on the machine.
+    APP_VERSION: '',
   };
   for (const key of ['S3_ENDPOINT', 'S3_BUCKET', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY']) {
     delete env[key];
@@ -442,6 +446,11 @@ test('6.3 un lien est rendu comme une ancre, le reste du titre est échappé', a
   const guide = page.locator('.guide');
   await expect(guide).toContainText('lien nommé');
   await expect(guide).toContainText('ligne cible');
+
+  // The page closes on the version of the running image. This child server is
+  // started without APP_VERSION (see `childEnv`), so it must report itself as a
+  // development build rather than announce a release (show-version-on-help-page).
+  await expect(guide.locator('.guide-version')).toHaveText('Version développement');
 });
 
 test('6.3 cliquer sur le lien ouvre la ligne cible sans ouvrir le renommage', async ({ page }) => {

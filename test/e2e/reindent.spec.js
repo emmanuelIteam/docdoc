@@ -11,7 +11,10 @@
 // this suite — the context menu still working after the outline has been
 // re-rendered. The responsive cases (section 7) cover
 // openspec/changes/halve-indent-on-narrow-screens: below 640px the indentation
-// step is halved, without changing depths or the display order. The
+// step is halved, without changing depths or the display order; and
+// openspec/changes/reduce-first-rank-margin-on-narrow-screens: below the same
+// breakpoint a depth-0 line (a project) is shifted 1rem to the left, so its
+// title keeps 16px more room, while every other line keeps its position. The
 // touch-spacing cases (section 8) cover
 // openspec/changes/increase-line-spacing-on-narrow-screens, then
 // openspec/changes/reduce-line-spacing-on-narrow-screens: below the same
@@ -656,9 +659,15 @@ test('4.4 le bouton « ← » du menu garde la ligne sur sa ligne', async ({ pag
 });
 
 /* ------------------------------------------------------------------ */
-/* 7. Indentation step vs window width                                */
-/*    (openspec/changes/halve-indent-on-narrow-screens)                */
+/* 7. Indentation step and first-rank margin vs window width          */
+/*    (openspec/changes/halve-indent-on-narrow-screens, then            */
+/*     reduce-first-rank-margin-on-narrow-screens)                      */
 /* ------------------------------------------------------------------ */
+
+// The room a depth-0 line (a project) gives back on a narrow screen: 1rem at
+// the default 16px root (`.line[data-depth='0'] { margin-left: -1rem }`), which
+// is what the e2e assertions measure.
+const FIRST_RANK_SHIFT = 16;
 
 // The computed left margin of every displayed line, keyed by node id. The
 // indentation is applied by CSS (`.line { margin-left: depth * step }`), so the
@@ -688,7 +697,7 @@ async function expectMargins(page, expected) {
   }
 }
 
-test('7.1 pas plein au-dessus du seuil de 640 px', async ({ page }) => {
+test('7.1 pas plein et marge de bureau au-dessus du seuil de 640 px', async ({ page }) => {
   await resetDomainTo(INDENT_FIXTURE);
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto(domainPath);
@@ -696,12 +705,16 @@ test('7.1 pas plein au-dessus du seuil de 640 px', async ({ page }) => {
   await expectMargins(page, { a: 0, b: 25.6, c: 51.2 });
 });
 
-test('7.2 pas réduit de moitié à 640 px et en dessous', async ({ page }) => {
+test('7.2 pas réduit de moitié et marge des projets réduite à 640 px et en dessous', async ({
+  page,
+}) => {
   await resetDomainTo(INDENT_FIXTURE);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(domainPath);
 
-  await expectMargins(page, { a: 0, b: 12.8, c: 25.6 });
+  // The first rank moves 1rem to the left, the levels below it keep the halved
+  // 0.8rem step: the project/task gap is therefore 12.8 + 16 = 28.8px.
+  await expectMargins(page, { a: -FIRST_RANK_SHIFT, b: 12.8, c: 25.6 });
 });
 
 test('7.3 le seuil de 640 px est inclusif', async ({ page }) => {
@@ -709,10 +722,10 @@ test('7.3 le seuil de 640 px est inclusif', async ({ page }) => {
   await page.goto(domainPath);
 
   await page.setViewportSize({ width: 640, height: 720 });
-  await expectMargins(page, { c: 25.6 });
+  await expectMargins(page, { a: -FIRST_RANK_SHIFT, c: 25.6 });
 
   await page.setViewportSize({ width: 641, height: 720 });
-  await expectMargins(page, { c: 51.2 });
+  await expectMargins(page, { a: 0, c: 51.2 });
 });
 
 test('7.4 la bascule suit le redimensionnement, sans rechargement', async ({ page }) => {
@@ -730,12 +743,78 @@ test('7.4 la bascule suit le redimensionnement, sans rechargement', async ({ pag
 
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => window.__noReload)).toBe(true);
-  await expectMargins(page, { a: 0, b: 12.8, c: 25.6 });
+  await expectMargins(page, { a: -FIRST_RANK_SHIFT, b: 12.8, c: 25.6 });
   expect(await outlineLayout(page)).toEqual(before);
 
   await page.setViewportSize({ width: 1280, height: 720 });
   await expectMargins(page, { a: 0, b: 25.6, c: 51.2 });
   expect(await outlineLayout(page)).toEqual(before);
+});
+
+// The pin bar of a domain page shows the chain of parents of the line being
+// read. Its first-rank row must take the project's reduced margin too: it lives
+// in the header, outside `.outline`, but carries `data-depth` so the same CSS
+// rule applies and the pinned project stays aligned with its line.
+test('7.5 à 390 px, la ligne épinglée d’un projet suit la marge réduite', async ({ page }) => {
+  await resetDomainTo(DEEP_FIXTURE);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(domainPath);
+
+  // 'p8' has sub-tasks: when its title straddles the bar it is pinned as the
+  // last crumb, exactly like a mother task is at 1280px (test 12.8). The row is
+  // taller on a narrow screen (39.6px, title centred), so more of it must be
+  // hidden for the title itself to straddle the bar.
+  await scrollLineTopAtBar(page, 'p8', -20);
+  await expect(ancestryItems(page).last()).toHaveText('Projet 9');
+
+  const alignment = await page.evaluate(() => {
+    const panel = document.getElementById('ancestry');
+    const crumb = panel.querySelector('.ancestry-item:last-child');
+    const line = document.querySelector('#outline .line[data-id="p8"]');
+    const item = crumb.getBoundingClientRect();
+    return {
+      rowMargin: getComputedStyle(crumb.querySelector('.ancestry-row')).marginLeft,
+      lineMargin: getComputedStyle(line).marginLeft,
+      labelLeft: crumb.querySelector('.ancestry-label').getBoundingClientRect().left,
+      titleLeft: line.querySelector('.title').getBoundingClientRect().left,
+      // The crumb is clipped by its item (`overflow: hidden`): the bullet would
+      // lose its left edge if the bar did not give back the same 1rem.
+      itemLeft: item.left,
+      bulletLeft: crumb.querySelector('.ancestry-bullet').getBoundingClientRect().left,
+      panelOverflowX: panel.scrollWidth - panel.clientWidth,
+    };
+  });
+
+  expect(alignment.lineMargin).toBe('-16px');
+  expect(alignment.rowMargin).toBe('-16px');
+  expect(Math.abs(alignment.labelLeft - alignment.titleLeft)).toBeLessThanOrEqual(1);
+  expect(alignment.bulletLeft).toBeGreaterThanOrEqual(alignment.itemLeft);
+  expect(alignment.panelOverflowX).toBeLessThanOrEqual(0);
+});
+
+// The ring drawn around the outline while a drag hovers its root area must
+// enclose the first-rank rows, which now start left of the outline's own box.
+test('7.6 à 390 px, l’anneau de dépôt racine suit le bord gauche des projets', async ({ page }) => {
+  await resetDomainTo(INDENT_FIXTURE);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(domainPath);
+
+  const geometry = await page.evaluate(() => {
+    const outline = document.getElementById('outline');
+    outline.classList.add('drop-root');
+    const ring = getComputedStyle(outline, '::before');
+    const row = outline.querySelector('.line[data-depth="0"]').getBoundingClientRect();
+    return {
+      ringLeft: parseFloat(ring.left),
+      ringRight: parseFloat(ring.right),
+      outlineLeft: outline.getBoundingClientRect().left,
+      rowLeft: row.left,
+    };
+  });
+
+  expect(geometry.ringLeft).toBeCloseTo(-FIRST_RANK_SHIFT, 3);
+  expect(geometry.ringRight).toBeCloseTo(0, 3);
+  expect(geometry.outlineLeft + geometry.ringLeft).toBeCloseTo(geometry.rowLeft, 1);
 });
 
 /* ------------------------------------------------------------------ */

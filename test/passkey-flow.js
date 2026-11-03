@@ -50,6 +50,9 @@ process.env.PORT = String(PORT);
 process.env.RP_ID = RP_ID;
 process.env.RP_ORIGIN = ORIGIN;
 process.env.NODE_ENV = 'development';
+// The release tag of the image, read when the server module loads: it is what
+// the Help page displays (openspec change show-version-on-help-page).
+process.env.APP_VERSION = '1.2.3';
 process.env.AUTHORIZED_EMAILS = AUTHORIZED;
 process.env.EMAIL_PROVIDER = 'dev';
 process.env.DOCDOC_DATA_DIR = FIXTURE_DIR;
@@ -655,6 +658,20 @@ async function main() {
   assert.ok(res.text.includes('indente la ligne et'));
   assert.ok(res.text.includes('MAJ+Tab'));
   ok('page Aide : les raccourcis Tab / MAJ+Tab sont documentés');
+
+  // The guide closes on the version of the running image: here the tag fixed in
+  // APP_VERSION above. It is a Help-page line only, so the pages of work never
+  // carry it.
+  assert.match(res.text, /class="guide-version">Version 1\.2\.3</);
+  ok('page Aide : la version servie est affichée en fin de manuel');
+
+  res = await call('GET', '/administration');
+  assert.strictEqual(res.status, 200);
+  assert.ok(!res.text.includes('guide-version'), 'la page Administration ne doit pas afficher la version');
+  res = await call('GET', '/domaine/voyages');
+  assert.strictEqual(res.status, 200);
+  assert.ok(!res.text.includes('guide-version'), 'une page de domaine ne doit pas afficher la version');
+  ok('version : absente des pages de travail');
 
   // 14. Passkey management lists exactly this account's passkey.
   res = await call('GET', '/auth/passkeys');

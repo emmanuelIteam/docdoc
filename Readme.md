@@ -264,10 +264,14 @@ se déplace plus : un correctif prend un nouveau numéro.
 | Étape | Détail |
 | --- | --- |
 | Validation | Le tag doit correspondre à `^[0-9]+\.[0-9]+(\.[0-9]+)?$`. |
-| Build | `docker build --build-arg APP_VERSION=<tag>` : l'étape `assets` du `Dockerfile` minifie `app.js`, `auth.js`, `pwa.js` et `style.css`, et inscrit le tag dans `CACHE_VERSION` de `sw.js`. |
+| Build | `docker build --build-arg APP_VERSION=<tag>` : l'étape `assets` du `Dockerfile` minifie `app.js`, `auth.js`, `pwa.js` et `style.css`, et inscrit le tag dans `CACHE_VERSION` de `sw.js`. L'étape finale le conserve dans la variable d'environnement `APP_VERSION`, que la page Aide affiche. |
 | Publication | `docker.io/emmanuel7044/docdoc:<tag>`, image `linux/amd64` unique, sans tag `latest`. |
 | Déploiement | `scw container container update` sur le conteneur `docdoc-app`, puis attente du statut `ready` sur la nouvelle image (10 minutes au plus). |
 | Contrôle | Si la variable `APP_URL` est définie, `GET /sw.js` doit déclarer `CACHE_VERSION = '<tag>'` ; sinon l'étape est ignorée. |
+
+La page **Aide** affiche ce tag en bas de son manuel : c'est le moyen le plus direct de vérifier à
+l'œil quelle version répond. Le contrôle automatisé de la pipeline reste `GET /sw.js`, joignable sans
+session.
 
 ### Secrets et variables GitHub
 
@@ -308,7 +312,7 @@ scw container container update <id-du-conteneur> image=docker.io/emmanuel7044/do
 ```
 
 Sans `--build-arg`, la constante `CACHE_VERSION` du dépôt est conservée : c'est le comportement voulu
-en développement local.
+en développement local, et la page Aide annonce alors « Version développement » au lieu d'un tag.
 
 > **Un seul écrivain à la fois.** `var.app_image` reste la valeur qu'OpenTofu applique. Le pipeline
 > déploie par l'API Scaleway sans modifier `main.tf` : après une release du pipeline, mets `app_image`
@@ -325,7 +329,7 @@ scw container container update <id-du-conteneur> image=docker.io/emmanuel7044/do
 
 Le même geste se fait depuis la console Scaleway (conteneur → Image). Les images publiées restent
 disponibles sur Docker Hub ; le contrôle `/sw.js` permet de confirmer que l'ancienne version sert de
-nouveau.
+nouveau, et la page Aide en affiche le tag.
 
 > L'image est **amd64 uniquement**.
 

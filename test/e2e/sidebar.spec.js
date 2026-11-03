@@ -1,7 +1,8 @@
 'use strict';
 
-// End-to-end checks of the left sidebar on a phone (openspec change
-// collapse-sidebar-on-domain-select, tasks 1.1 to 1.3).
+// End-to-end checks of the left sidebar on a phone (openspec changes
+// collapse-sidebar-on-domain-select, tasks 1.1 to 1.3, and pin-sidebar-footer,
+// tasks 1.6 and 1.7).
 //
 // The application is started as a *child process*, as in administration.spec.js:
 // this spec coexists with the other suites in the same Playwright worker, and
@@ -297,23 +298,63 @@ test('1.3 sur un écran large, choisir un domaine laisse le panneau ouvert', asy
 });
 
 /* ------------------------------------------------------------------ */
-/* 1.4 The panel's other entries are not domain picks                  */
+/* 1.4 Every panel entry that opens a page closes the panel (phone)    */
 /* ------------------------------------------------------------------ */
 
-test('1.4 Accueil, Administration et Aide ne referment pas le panneau sur un smartphone', async ({ browser }) => {
+test('1.4 sur un smartphone, toute entrée qui ouvre une page referme le panneau', async ({ browser }) => {
   const { context, page } = await signedInPage(browser, {
     viewport: PHONE,
     hasTouch: true,
     isMobile: true,
   });
 
-  await page.goto('/domaine/e2e');
-  await expect(page.locator('#sidebar')).toHaveCSS('width', '240px');
+  // The previous entry left the panel collapsed and persisted; reopen it from a
+  // short domain page before each one.
+  async function openPanel(path = '/domaine/e2e') {
+    await page.goto(path);
+    if (await page.locator('body').evaluate((el) => el.classList.contains('sidebar-collapsed'))) {
+      await page.click('#sidebar-toggle');
+    }
+    await expect(page.locator('#sidebar')).toHaveCSS('width', '240px');
+  }
 
-  // Each entry is reached from the short domain page: the point is the panel's
-  // state after the link, not where the entry sits in the panel.
-  // The head rubric is outside `#sidebar-nav`, so the domain-pick listener must
-  // not take it for a domain either.
+  await openPanel();
+  await page.click('a.sidebar-home');
+  await page.waitForURL(/\/(\?.*)?$/);
+  await expect(page.locator('body')).toHaveClass(/sidebar-collapsed/);
+
+  await openPanel();
+  await page.click('a.sidebar-admin');
+  await page.waitForURL(/\/administration$/);
+  await expect(page.locator('body')).toHaveClass(/sidebar-collapsed/);
+
+  await openPanel();
+  await page.click('a.sidebar-help');
+  await page.waitForURL(/\/aide$/);
+  await expect(page.locator('body')).toHaveClass(/sidebar-collapsed/);
+
+  // The passkeys page has no panel of its own, but the state is persisted, so
+  // returning to a page that displays the panel arrives collapsed. The fixed
+  // labels bar no longer covers the session box while the panel is open.
+  await openPanel();
+  await page.click('#sidebar a[href="/auth/passkeys"]');
+  await page.waitForURL(/\/auth\/passkeys$/);
+  expect(await collapsedKey(page)).toBe('1');
+  await page.goto('/domaine/e2e');
+  await expect(page.locator('body')).toHaveClass(/sidebar-collapsed/);
+  await expect(page.locator('#sidebar')).toHaveCSS('width', '0px');
+
+  await context.close();
+});
+
+/* ------------------------------------------------------------------ */
+/* 1.5 A wide screen keeps the panel as it was                         */
+/* ------------------------------------------------------------------ */
+
+test('1.5 sur un écran large, les entrées du panneau laissent le panneau ouvert', async ({ browser }) => {
+  const { context, page } = await signedInPage(browser, { viewport: { width: 1280, height: 720 } });
+
+  await page.goto('/domaine/e2e');
   await page.click('a.sidebar-home');
   await page.waitForURL(/\/(\?.*)?$/);
   await expect(page.locator('body')).not.toHaveClass(/sidebar-collapsed/);
@@ -327,12 +368,128 @@ test('1.4 Accueil, Administration et Aide ne referment pas le panneau sur un sma
   await expect(page.locator('#sidebar')).toHaveCSS('width', '240px');
   expect(await collapsedKey(page)).toBe(null);
 
+  await context.close();
+});
+
+/* ------------------------------------------------------------------ */
+/* 1.6 The panel is one screen tall: the bottom block stays at the     */
+/*     bottom of the screen, and only the domain list scrolls          */
+/* ------------------------------------------------------------------ */
+
+// The panel's geometry, read in one evaluate: what "the bottom block is on
+// screen" means is the distance between its bottom edge and the bottom of the
+// window, which must not depend on the height of the page.
+async function panelGeometry(page) {
+  return page.evaluate(() => {
+    const sidebar = document.querySelector('#sidebar');
+    const nav = document.querySelector('#sidebar-nav');
+    const footer = document.querySelector('.sidebar-footer');
+    const navRect = nav.getBoundingClientRect();
+    const footerRect = footer.getBoundingClientRect();
+    return {
+      viewportH: window.innerHeight,
+      paddingBottom: parseFloat(getComputedStyle(sidebar).paddingBottom),
+      navTop: navRect.top,
+      navBottom: navRect.bottom,
+      footerTop: footerRect.top,
+      footerBottom: footerRect.bottom,
+      navScrollHeight: nav.scrollHeight,
+      navClientHeight: nav.clientHeight,
+      pageScrollY: window.scrollY,
+    };
+  });
+}
+
+// The block rests on the panel's bottom padding, within a pixel of rounding.
+const atScreenBottom = (box) =>
+  Math.abs(box.footerBottom - (box.viewportH - box.paddingBottom)) <= 1;
+
+test('1.6 avec une liste courte, le bloc bas repose au bas de l’écran', async ({ browser }) => {
+  const { context, page } = await signedInPage(browser, { viewport: { width: 1280, height: 720 } });
+
   await page.goto('/domaine/e2e');
-  await page.click('a.sidebar-help');
-  await page.waitForURL(/\/aide$/);
-  await expect(page.locator('body')).not.toHaveClass(/sidebar-collapsed/);
+  const box = await panelGeometry(page);
+
+  // The premise: two domains fit, so the list does not scroll.
+  expect(box.navScrollHeight).toBe(box.navClientHeight);
+  // The block is on screen, under the list, at the bottom of the window.
+  expect(box.footerTop).toBeGreaterThan(0);
+  expect(box.navBottom).toBeLessThanOrEqual(box.footerTop);
+  expect(atScreenBottom(box)).toBe(true);
+
+  await context.close();
+});
+
+test('1.7 avec une liste longue, seule la liste défile et le bloc bas reste à l’écran', async ({ browser }) => {
+  const { context, page } = await signedInPage(browser, { viewport: { width: 1280, height: 720 } });
+
+  // Enough domains to overflow the screen, created through the application so
+  // the store, the slugs and the sidebar are the real ones.
+  for (let i = 1; i <= 24; i++) {
+    const response = await page.request.post('/api/domains', { form: { name: `Domaine ${i}` } });
+    expect(response.ok()).toBe(true);
+  }
+
+  await page.goto('/domaine/e2e');
+  const overflowing = await panelGeometry(page);
+  // The list, not the page, carries the overflow.
+  expect(overflowing.navScrollHeight).toBeGreaterThan(overflowing.navClientHeight);
+  expect(overflowing.footerTop).toBeGreaterThan(0);
+  expect(overflowing.navBottom).toBeLessThanOrEqual(overflowing.footerTop);
+  expect(atScreenBottom(overflowing)).toBe(true);
+
+  // A page taller than the window: the panel stays pinned while the page
+  // scrolls under it, so the block does not leave the screen.
+  await page.goto('/administration');
+  const before = await panelGeometry(page);
+  await page.evaluate(() => window.scrollTo(0, 600));
+  await page.waitForFunction(() => window.scrollY > 0);
+  const after = await panelGeometry(page);
+
+  expect(after.pageScrollY).toBeGreaterThan(0);
+  expect(atScreenBottom(after)).toBe(true);
+  expect(Math.abs(after.footerBottom - before.footerBottom)).toBeLessThanOrEqual(1);
+
+  // The same holds on a phone-sized window.
+  const phone = await signedInPage(browser, {
+    viewport: PHONE,
+    hasTouch: true,
+    isMobile: true,
+  });
+  await phone.page.goto('/domaine/e2e');
+  await context.close();
+});
+
+/* ------------------------------------------------------------------ */
+/* 1.8 The labels bar steps aside while the panel is open              */
+/* ------------------------------------------------------------------ */
+
+test("1.8 sur un smartphone, la barre d'étiquettes s'efface derrière le panneau puis revient", async ({ browser }) => {
+  const { context, page } = await signedInPage(browser, {
+    viewport: PHONE,
+    hasTouch: true,
+    isMobile: true,
+  });
+
+  await page.goto('/domaine/e2e');
+  await expect(page.locator('body')).toHaveClass(/has-labels-bar/);
+  // The panel is open by default; the fixed bar would cover its session box, so
+  // it is not displayed at all.
   await expect(page.locator('#sidebar')).toHaveCSS('width', '240px');
-  expect(await collapsedKey(page)).toBe(null);
+  await expect(page.locator('.labels-bar')).toBeHidden();
+
+  // Collapsing the panel brings the bar back, fixed at the bottom right.
+  await page.click('#sidebar-toggle');
+  await expect(page.locator('.labels-bar')).toBeVisible();
+  await expect(page.locator('.labels-bar')).toHaveCSS('position', 'fixed');
+
+  // Reopening the panel hides it again.
+  await page.click('#sidebar-toggle');
+  await expect(page.locator('.labels-bar')).toBeHidden();
+
+  // Above the breakpoint, the bar stays visible with the panel open.
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await expect(page.locator('.labels-bar')).toBeVisible();
 
   await context.close();
 });

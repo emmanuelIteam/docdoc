@@ -21,6 +21,13 @@ const PORT = process.env.PORT || 3000;
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days, sliding
 
+// Version of the running image: the release tag the pipeline passes as
+// `--build-arg APP_VERSION`, which the final Dockerfile stage exposes in the
+// environment. Empty when the app runs from the working tree (`pnpm start`, a
+// plain `docker build`): the Help page then reports a development build instead
+// of inventing a number.
+const APP_VERSION = String(process.env.APP_VERSION || '').trim();
+
 // The accounts allowed to hold a space. One address by default, but the rule is
 // configuration rather than a literal in the code, so opening docdoc to another
 // address is a deployment change.
@@ -1421,6 +1428,14 @@ async function renderAdminPage(space) {
 /* ------------------------------------------------------------------ */
 
 function renderGuidePage(space) {
+  // The Help page is the application's "about" screen, so the version of the
+  // running image belongs at the end of the manual. The tag comes from the
+  // release build (`APP_VERSION`, exposed to the runtime by the Dockerfile);
+  // a build started from the working tree reports itself as a development
+  // build instead of showing a number that would mean nothing. `escapeHtml`
+  // keeps a hand-set APP_VERSION from injecting markup into the page.
+  const version = APP_VERSION || 'développement';
+
   const content = `<div class="guide">
     <p class="guide-intro">Cette page rassemble les gestes disponibles dans l'outline, du plus courant au plus spécifique.</p>
 
@@ -1485,6 +1500,8 @@ function renderGuidePage(space) {
       <h2>Gérer les thèmes et les domaines</h2>
       <p>Les thèmes et les domaines se gèrent depuis la page <a href="/administration">Administration</a>, en pied du panneau.</p>
     </section>
+
+    <p class="guide-version">Version ${escapeHtml(version)}</p>
   </div>`;
 
   return renderShell(space, content, null, { title: 'Aide', help: true });

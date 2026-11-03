@@ -48,6 +48,12 @@ COPY scripts ./scripts
 # mounted volume at /app/data stays writable at runtime.
 RUN mkdir -p /app/data && chown node:node /app/data
 
+# Release tag, published to the running application: the Help page displays it.
+# Empty for a local `docker build`, as in the asset stage above; the app then
+# reports a development build.
+ARG APP_VERSION=""
+ENV APP_VERSION=$APP_VERSION
+
 ENV NODE_ENV=production
 EXPOSE 3000
 
