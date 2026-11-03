@@ -30,7 +30,7 @@
 
 ## 4. Infrastructure et configuration
 
-- [x] 4.1 Ajouter `lifecycle { ignore_changes = [image] }` à `scaleway_container.app` dans `main.tf` et mettre à jour la description de `var.app_image` (valeur de création initiale uniquement)
+- [x] 4.1 Mettre à jour la description de `var.app_image` dans `main.tf` (deux chemins : pipeline et `tofu apply`, règle d'alignement) et ne pas ajouter d'exception `ignore_changes`, pour que le déploiement manuel par OpenTofu reste effectif
 - [x] 4.2 Documenter les secrets (`DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`, `SCW_ACCESS_KEY`, `SCW_SECRET_KEY`) et variables (`SCW_DEFAULT_PROJECT_ID`, `SCW_DEFAULT_REGION`, `SCW_CONTAINER_ID`, `APP_URL`) à créer dans GitHub
 - [x] 4.3 Vérifier l'identifiant du conteneur cible (namespace `docdoc-namespace`, conteneur `docdoc-app`) et la région `fr-par` avant la première exécution
 

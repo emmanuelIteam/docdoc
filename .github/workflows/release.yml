@@ -89,6 +89,11 @@ jobs:
     env:
       SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
       SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+      # `scw` resolves its organization even for container commands, and a
+      # fresh runner has no ~/.config/scw/config.yaml. Without these two, the
+      # CLI stops with "Organization ID is required". On this account the
+      # default project and the organization share the same identifier.
+      SCW_DEFAULT_ORGANIZATION_ID: ${{ vars.SCW_DEFAULT_ORGANIZATION_ID || vars.SCW_DEFAULT_PROJECT_ID }}
       SCW_DEFAULT_PROJECT_ID: ${{ vars.SCW_DEFAULT_PROJECT_ID }}
       SCW_DEFAULT_REGION: ${{ vars.SCW_DEFAULT_REGION || 'fr-par' }}
       SCW_CONTAINER_ID: ${{ vars.SCW_CONTAINER_ID }}

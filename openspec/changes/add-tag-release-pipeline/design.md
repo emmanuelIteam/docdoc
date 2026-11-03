@@ -93,9 +93,13 @@ Le job `deploy` installe une version épinglée du binaire `scw` (téléchargé 
 - *Pourquoi `sw.js` comme sonde* : il est servi en `Cache-Control: no-cache`, ne dépend pas de la session, et contient le tag de la release. Un `200` sur `/` prouverait seulement qu'une instance répond — pas que c'est la nouvelle. `APP_URL` reste facultatif car l'endpoint généré du conteneur peut changer.
 - *Pourquoi l'attente avant la sonde* : pendant le rolling update, l'ancienne instance peut encore répondre ; le statut `ready` de Scaleway indique que la nouvelle révision est en place.
 
-### 7. `main.tf` cesse de piloter l'image
+### 7. `main.tf` continue de piloter l'image, avec une coordination documentée
 
-`scaleway_container.app` reçoit `lifecycle { ignore_changes = [image] }`. Sans cela, un `tofu apply` ultérieur ramènerait l'image au défaut de `var.app_image` (`1.9`) et annulerait silencieusement la release. La variable reste utile à la création initiale du conteneur ; sa description est mise à jour pour le dire.
+`scaleway_container.app` garde `image = var.app_image` sans exception `lifecycle`. Le déploiement manuel (`tofu apply -var app_image=…`) doit continuer de fonctionner : c'est la procédure historique du dépôt et une exigence explicite.
+
+Une première version posait `lifecycle { ignore_changes = [image] }` pour que le pipeline ne soit pas annulé par un apply ultérieur. À l'usage, cette exception rend `tofu apply` sourd à `app_image` : un changement de version dans `main.tf` n'a plus aucun effet, ce qui casse le déploiement manuel sans le dire. Elle est retirée.
+
+Conséquence assumée : deux écrivains. Le pipeline déploie par l'API Scaleway sans modifier `main.tf` ; `var.app_image` reste la valeur qu'OpenTofu impose. Après une release du pipeline, il faut aligner `app_image` (ou passer `-var app_image=<tag>`) avant un apply, sinon l'image revient à l'ancienne version. Un `tofu plan` montre ce changement d'image avant de l'appliquer.
 
 - *Alternative écartée* : faire écrire `var.app_image` par la CI dans `main.tf` puis committer. Cela mélange release et infrastructure, exige un jeton à droit d'écriture sur le dépôt et crée des conflits avec les travaux en cours.
 
@@ -106,7 +110,7 @@ Une réexécution du workflow est autorisée : elle repousse le même tag et red
 ## Risks / Trade-offs
 
 - **Tag repoussé = contenu différent sous la même étiquette** → règle documentée : un tag publié ne bouge plus ; un correctif prend un nouveau numéro. Le pipeline ne peut pas l'imposer techniquement (Docker Hub autorise l'écrasement), et l'interdire bloquerait la reprise après un échec de déploiement.
-- **`ignore_changes` masque une dérive** : une modification manuelle de l'image dans la console Scaleway ne sera plus corrigée par `tofu apply` → assumé, le pipeline devient la source de vérité ; documenté dans le Readme.
+- **Deux écrivains sur l'image** : le pipeline (API Scaleway) et `tofu apply` (`var.app_image`) → un apply qui garde une ancienne valeur ramène l'ancienne image. Le `plan` l'affiche ; règle documentée : après une release du pipeline, aligner `app_image` avant tout apply. C'est le prix à payer pour conserver le déploiement manuel.
 - **Le build dépend de binaires natifs** (esbuild, lightningcss) → versions épinglées dans `package-lock.json`, étape de build en glibc, échec explicite si la minification produit un fichier vide. Ces dépendances n'entrent pas dans l'image finale.
 - **Rupture du lockfile** : ajouter des `devDependencies` sans régénérer `package-lock.json` ferait échouer `npm ci` dans l'étape `assets` → tâche dédiée de mise à jour du lockfile (+ `pnpm-lock.yaml`, utilisé en local).
 - **`sw.js` ne contient pas le motif attendu** (renommage de la constante, minification accidentelle) → le script échoue avant la poussée, plutôt que de publier une image dont le cache PWA ne serait pas versionné.

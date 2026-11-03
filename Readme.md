@@ -280,6 +280,7 @@ se déplace plus : un correctif prend un nouveau numéro.
 | `SCW_ACCESS_KEY` | secret | Clé d'accès Scaleway dédiée à la CI. |
 | `SCW_SECRET_KEY` | secret | Clé secrète associée. |
 | `SCW_DEFAULT_PROJECT_ID` | variable | Projet Scaleway qui porte le conteneur. |
+| `SCW_DEFAULT_ORGANIZATION_ID` | variable | Organisation Scaleway, déjà présente dans `secrets.sops.yaml`. `scw` l'exige même pour une commande conteneur ; à défaut, le pipeline reprend l'identifiant du projet (identique sur ce compte). |
 | `SCW_DEFAULT_REGION` | variable | `fr-par` (facultatif : c'est la valeur par défaut du pipeline). |
 | `SCW_CONTAINER_ID` | variable | Identifiant du conteneur `docdoc-app` : le seul UUID (`aa6a055f-b622-401e-9413-de4ff8d9279b` aujourd'hui), sans le préfixe `fr-par/` que montre l'état Terraform. `scw container container list` le donne. |
 | `APP_URL` | variable | URL publique (par exemple `https://docdoc.re`) ; active le contrôle de version servie. |
@@ -287,16 +288,32 @@ se déplace plus : un correctif prend un nouveau numéro.
 La clé Scaleway de la CI n'a besoin que du droit de modifier le conteneur. Celle du provider OpenTofu
 (`secrets.sops.yaml`) convient, mais une clé dédiée se révoque sans casser `tofu apply`.
 
-### Construire l'image à la main
+### Déploiement manuel (sans le pipeline)
+
+Le pipeline n'est pas obligatoire : la procédure manuelle reste valable, à l'identique.
 
 ```bash
 docker build --build-arg APP_VERSION=1.11 -t emmanuel7044/docdoc:1.11 .
-```
-```bash
 docker push emmanuel7044/docdoc:1.11
 ```
+
+Puis deux façons équivalentes de basculer le conteneur :
+
+```bash
+# 1. par OpenTofu : var.app_image est la valeur que l'apply impose
+sops exec-env secrets.sops.yaml 'tofu apply -var app_image=docker.io/emmanuel7044/docdoc:1.11'
+
+# 2. par la CLI Scaleway, sans état Terraform (même appel que le pipeline)
+scw container container update <id-du-conteneur> image=docker.io/emmanuel7044/docdoc:1.11
+```
+
 Sans `--build-arg`, la constante `CACHE_VERSION` du dépôt est conservée : c'est le comportement voulu
-en développement local. Le pipeline ne pousse jamais l'image depuis un poste de travail.
+en développement local.
+
+> **Un seul écrivain à la fois.** `var.app_image` reste la valeur qu'OpenTofu applique. Le pipeline
+> déploie par l'API Scaleway sans modifier `main.tf` : après une release du pipeline, mets `app_image`
+> à jour (ou passe `-var app_image=…`) avant le prochain `tofu apply`, sinon l'image revient à
+> l'ancienne version. Le `plan` affiche ce changement d'image avant de l'appliquer.
 
 ### Retour arrière
 
@@ -341,7 +358,7 @@ ne pas augmenter `memory_limit` / `cpu_limit` sans vérifier la consommation du 
 
 | Variable | Défaut | Rôle |
 | --- | --- | --- |
-| `app_image` | `docker.io/emmanuel7044/docdoc:1.9` | Image utilisée à la création du conteneur. Ensuite, l'image est pilotée par le pipeline de release (voir « Publier une version »). |
+| `app_image` | `docker.io/emmanuel7044/docdoc:1.11` | Image déployée sur le conteneur. Un `tofu apply` l'impose ; le pipeline de release la met à jour sans passer par OpenTofu (voir « Publier une version »). |
 | `keep_warm` | `true` | `true` = une instance reste allumée (réponse instantanée, toujours 0 €). `false` = mise à l'échelle à zéro (quelques secondes de démarrage à la première requête). |
 | `rp_id` | domaine personnalisé, sinon endpoint généré | RP ID WebAuthn : nom d'hôte sans schéma ni port. Laisser vide : la valeur est déduite de `domain_name`. Ne renseigner que pour forcer une valeur (par exemple le domaine parent quand l'application est servie sur un sous-domaine). |
 | `rp_origin` | `https://` + RP ID effectif | Origine HTTPS complète. Laisser vide : la valeur est déduite. |
@@ -535,10 +552,10 @@ sops exec-env secrets.sops.yaml 'tofu plan'
 sops exec-env secrets.sops.yaml 'tofu apply'
 ```
 
-> **L'image n'est plus pilotée par OpenTofu.** `scaleway_container.app` déclare
-> `lifecycle.ignore_changes = [image]` : un `tofu apply` ultérieur ne ramène pas l'image au défaut de
-> `var.app_image` et n'annule donc pas le déploiement fait par le pipeline. Pour changer de version,
-> pousser un tag (voir « Publier une version »), pas modifier `app_image`.
+> **`app_image` est un champ comme un autre.** `var.app_image` pilote l'image du conteneur : un
+> `tofu apply` l'impose, c'est le chemin du déploiement manuel. Le pipeline de release met le
+> conteneur à jour par l'API Scaleway sans modifier `main.tf`, donc après une release, aligne
+> `app_image` avant de relancer un apply (voir « Déploiement manuel »).
 
 ### Rattacher le domaine personnalisé (`docdoc.re`)
 

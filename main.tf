@@ -17,7 +17,7 @@ provider "scaleway" {
 # ---------------------------------------------------------------------------
 
 variable "app_image" {
-  description = "Image Docker utilisée à la création du conteneur. Le pipeline de release (tag git) met ensuite l'image à jour via l'API Scaleway : lifecycle.ignore_changes empêche un apply ultérieur de ramener l'image à cette valeur."
+  description = "Image Docker déployée sur le conteneur. Deux chemins la mettent à jour : le pipeline de release (tag git) directement via l'API Scaleway, ou un `tofu apply` — qui impose alors cette valeur. Après une release du pipeline, aligner cette valeur sur le tag déployé avant tout apply, sinon l'image revient à l'ancienne."
   type        = string
   default     = "docker.io/emmanuel7044/docdoc:1.11"
 }
@@ -263,14 +263,6 @@ resource "scaleway_container" "app" {
     # de fournir une clé et un projet dédiés.
     SCW_SECRET_KEY         = var.tem_secret_key != "" ? var.tem_secret_key : scaleway_iam_api_key.s3_credentials.secret_key
     SCW_DEFAULT_PROJECT_ID = var.tem_project_id != "" ? var.tem_project_id : data.scaleway_account_project.default.id
-  }
-
-  # L'image est pilotée par le pipeline de release : tag git -> Docker Hub ->
-  # API Scaleway (.github/workflows/release.yml). Sans cette exception, un
-  # `tofu apply` ramènerait l'image au défaut de var.app_image et annulerait
-  # silencieusement le dernier déploiement.
-  lifecycle {
-    ignore_changes = [image]
   }
 }
 
