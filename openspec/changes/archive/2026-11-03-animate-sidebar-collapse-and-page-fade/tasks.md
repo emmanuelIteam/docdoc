@@ -23,7 +23,7 @@
 
 ## 4. Spec et PWA
 
-- [ ] 4.1 Reporter les exigences dans `openspec/specs/domain-navigation/spec.md` à l'archivage du changement (delta : repli après l'affichage de la page, exigence de fondu ajoutée).
+- [x] 4.1 Reporter les exigences dans `openspec/specs/domain-navigation/spec.md` à l'archivage du changement (delta : repli après l'affichage de la page, exigence de fondu ajoutée).
 - [x] 4.2 Incrémenter `CACHE_VERSION` dans `public/sw.js` (`style.css` et `app.js` étant précachés).
 
 ## 5. Vérifications
