@@ -5,6 +5,17 @@
   --bg: #fafafa;
   --card: #ffffff;
   --border: #e4e4e7;
+  /* Shared by the panel's collapse and the page's fade, so the two movements
+     answer each other. `app.js` waits for the fade before folding the panel. */
+  --panel-motion: .24s;
+  --panel-ease: cubic-bezier(.4, 0, .2, 1);
+  /* Height of the on-screen keyboard, published by `app.js` from the visual
+     viewport. It stays 0 when the keyboard is closed or when the engine resizes
+     the layout viewport instead of overlaying it. The bottom padding is what
+     keeps a programmatic reveal (`scrollIntoView`) above the keyboard, without
+     any position arithmetic in JavaScript. */
+  --keyboard-inset: 0px;
+  scroll-padding-bottom: calc(var(--keyboard-inset) + .75rem);
 }
 
 * { box-sizing: border-box; }
@@ -50,9 +61,25 @@ body.sidebar-collapsed .shell { grid-template-columns: 0 1fr; }
   padding: 1rem;
   display: flex;
   flex-direction: column;
-  transition: width .15s ease;
 }
-body.sidebar-collapsed .sidebar { width: 0; padding: 0; border-right: none; }
+body.sidebar-collapsed .sidebar {
+  width: 0;
+  padding: 0;
+  border-right-width: 0;
+  opacity: 0;
+}
+/* The collapse is seen, not just applied: the width, the padding and the
+   border converge on zero while the content fades, instead of the panel
+   vanishing in one frame. The transition is enabled by `app.js` once the
+   persisted state has been painted, so a page that arrives with the panel
+   already collapsed does not play the collapse a second time. */
+body.sidebar-ready .sidebar {
+  transition:
+    width var(--panel-motion) var(--panel-ease),
+    padding var(--panel-motion) var(--panel-ease),
+    border-right-width var(--panel-motion) var(--panel-ease),
+    opacity var(--panel-motion) ease;
+}
 
 /* Home rubric: its own slot at the head of the panel, above "Domaines" and the
    domain list, so the way back to the homepage is the panel's first entry. It
@@ -122,7 +149,19 @@ body.sidebar-collapsed .sidebar { width: 0; padding: 0; border-right: none; }
 .inline-form .rename-input { width: 14ch; }
 
 /* Content */
-.content { padding: 1.5rem; min-width: 0; }
+/* A new document is painted all at once, including the top bar: fading the
+   content region in keeps that replacement from reading as a jolt. The
+   animation only runs on load, so an in-place htmx swap never replays it, and
+   `both` starts the first paint transparent without moving anything. */
+@keyframes page-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.content {
+  padding: 1.5rem;
+  min-width: 0;
+  animation: page-fade-in .2s ease-out both;
+}
 
 /* The sticky hierarchy grows above the outline. Scroll anchoring would
    compensate for that growth by scrolling, moving the first visible line and
@@ -281,11 +320,11 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
 .empty-state p { color: var(--done); }
 
 /* ------------------------------------------------------------------ */
-/* Home page: the in-progress tasks of every domain                    */
+/* Home page: the in-progress leaf tasks of every domain               */
 /*                                                                     */
-/* One full-width link per task. The title may wrap on several lines    */
-/* and is never truncated; the domain badge is readable without hover   */
-/* and moves under the title below 640px, where the row is stacked.     */
+/* One full-width link per leaf task, stacked on two lines at every     */
+/* width: the title (never truncated), then the domain badge followed   */
+/* by the chain of parent tasks, which wraps instead of being cut.     */
 /* ------------------------------------------------------------------ */
 
 .home-tasks {
@@ -299,8 +338,9 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
 }
 .home-task {
   display: flex;
-  align-items: baseline;
-  gap: .75rem;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: .2rem;
   padding: .55rem .75rem;
   border: 1px solid var(--border);
   border-radius: .5rem;
@@ -314,9 +354,17 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
   outline-offset: 2px;
 }
 .home-task-title {
-  flex: 1 1 auto;
   min-width: 0;
   overflow-wrap: anywhere;
+}
+.home-task-context {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .1rem .35rem;
+  min-width: 0;
+  font-size: .78rem;
+  color: #52525b;
 }
 .home-task-domain {
   flex: 0 0 auto;
@@ -327,14 +375,25 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
   font-size: .78rem;
   white-space: nowrap;
 }
+.home-task-sep { color: #a1a1aa; }
+/* A separator and its parent stay on the same line: the parent's own title may
+   wrap inside the hop, but the chain never breaks right after the « › ». */
+.home-task-hop {
+  display: inline-flex;
+  align-items: baseline;
+  gap: .35rem;
+  min-width: 0;
+}
+.home-task-parent {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 
 @media (max-width: 640px) {
-  .home-task {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: .2rem;
+  .home-task-domain {
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
-  .home-task-domain { white-space: normal; }
 }
 
 /* Outline
@@ -387,6 +446,12 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
      of being hidden by it. `--topbar-height` is published by the client; the
      fallback keeps the value sane without JavaScript. */
   scroll-margin-top: calc(var(--topbar-height, 4rem) + .5rem);
+  /* The editing tint is painted on the line (see `.line.editing` below). The
+     transition lives on the base rule so the tint also fades out when the field
+     closes; it is short enough not to make hover or selection feel slow. */
+  transition:
+    background-color 120ms var(--panel-ease),
+    box-shadow 120ms var(--panel-ease);
 }
 .line:hover { background: #f4f4f5; }
 
@@ -510,6 +575,16 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
   box-shadow: inset 0 0 0 2px var(--accent);
 }
 
+/* The line whose title is being edited. The tint and the inset accent bar are
+   painted on the line itself, so the title and the neighbouring rows never move;
+   the short transition (on `.line`) makes the mode change readable instead of a
+   jump. It is declared after the hover/selection/target rules so the editing
+   state wins. */
+.line.editing {
+  background: #eff6ff;
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
 /* Title formatting */
 .title { cursor: text; line-height: 1.25; }
 .title.status-in-progress { font-weight: 700; }
@@ -541,14 +616,25 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
   color: inherit;
   background: transparent;
   border: none;
-  border-bottom: 1px dashed var(--done);
   border-radius: 0;
   padding: 0;
   margin: 0;
   outline: none;
+  /* Multi-line and auto-sized by `startRename`: the text wraps exactly as the
+     displayed title did, so a title on several lines keeps its height while it
+     is edited. The width is fluid: the field takes the room left by the bullet,
+     and the row grows with its content instead of clipping it. */
+  display: block;
   width: auto;
-  min-width: 2ch;
-  flex: 0 1 auto;
+  min-width: 0;
+  flex: 1 1 auto;
+  resize: none;
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  /* The underline is an inset shadow, not a border: a border would add 2px to
+     the box and make the height measured on the line drift by the same amount. */
+  box-shadow: inset 0 -2px 0 var(--accent);
 }
 
 /* Context menu (shown on hover or selection) */
@@ -797,6 +883,9 @@ body.has-labels-bar main {
 @media (prefers-reduced-motion: reduce) {
   .ancestry,
   body.has-labels-bar main { transition: none; }
+  body.sidebar-ready .sidebar { transition: none; }
+  .content { animation: none; }
+  .line { transition: none; }
 }
 
 /* ------------------------------------------------------------------ */

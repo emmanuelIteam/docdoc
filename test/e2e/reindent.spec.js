@@ -19,7 +19,11 @@
 // openspec/changes/increase-line-spacing-on-narrow-screens, then
 // openspec/changes/reduce-line-spacing-on-narrow-screens: below the same
 // 640px breakpoint each row is at least 39.6px tall (2.475rem, 90% of the
-// former 44px), without changing depths, parents or the display order.
+// former 44px), without changing depths, parents or the display order. Section
+// 13 covers openspec/changes/stabiliser-edition-mobile: a saved title no longer
+// re-renders the outline, the edited line keeps its height and the line below
+// it, a newer field survives a delayed save, and the pinned bar is not
+// remeasured while a title is being edited.
 //
 // The application runs in this process, against a throwaway data directory, so
 // the one-time code (written to the log by the development mailer) can be
@@ -159,6 +163,28 @@ const WRAP_FIXTURE = {
     },
   ],
   displayOrder: ['long'],
+};
+
+// A long title followed by another line, used by section 13: editing the long
+// line must keep its height and leave the line below exactly where it was.
+const MOBILE_EDIT_FIXTURE = {
+  id: DOMAIN_ID,
+  name: 'E2E',
+  slug: 'e2e',
+  order: 0,
+  labels: ['theme-e2e'],
+  projects: [
+    {
+      id: 'long',
+      title:
+        'Une tâche dont le titre est assez long pour revenir sur plusieurs lignes sur un téléphone',
+      status: 'todo',
+      collapsed: false,
+      children: [],
+    },
+    { id: 'after', title: 'Tâche suivante', status: 'todo', collapsed: false, children: [] },
+  ],
+  displayOrder: ['long', 'after'],
 };
 
 // A collapsed project with one hidden child, used by section 10: adding a
@@ -1725,4 +1751,217 @@ test('12.9 la barre de séparation accompagne la liste sans la faire sauter', as
   expect(after.scrollY).toBeGreaterThan(before.scrollY);
   expect(Math.abs(after.height - before.height)).toBeLessThanOrEqual(0.5);
   expect(Math.abs(after.crumb - before.crumb)).toBeLessThanOrEqual(0.5);
+});
+
+/* ------------------------------------------------------------------ */
+/* 13: stabiliser l'édition sur smartphone (openspec change             */
+/*     stabiliser-edition-mobile): no outline re-render on save, the    */
+/*     edited line keeps its geometry, a newer field is never replaced, */
+/*     and the keyboard does not resize the pinned bar.                 */
+/* ------------------------------------------------------------------ */
+
+// Height of the long line and top of the line that follows it, in viewport
+// coordinates: both must not move when the long title goes in and out of edit.
+function longEditGeometry(page) {
+  return page.evaluate(() => {
+    const row = document.querySelector('.line[data-id="long"]');
+    const next = document.querySelector('.line[data-id="after"]');
+    return {
+      height: row.getBoundingClientRect().height,
+      top: next.getBoundingClientRect().top,
+    };
+  });
+}
+
+test('13.1 renommer ne re-rend pas l’outline', async ({ page }) => {
+  await page.goto(domainPath);
+  const outlineRequests = [];
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname.endsWith('/outline-fragment')) {
+      outlineRequests.push(request.url());
+    }
+  });
+  await page.evaluate(() => {
+    document.querySelector('#outline').dataset.marker = 'kept';
+  });
+
+  const input = await enterEdit(page, 'b');
+  await input.fill('Projet B renommé');
+  const saved = page.waitForResponse(
+    (res) =>
+      res.request().method() === 'PUT' &&
+      new URL(res.url()).pathname.endsWith('/api/nodes/b')
+  );
+  await page.locator('#topbar h1').click();
+  await saved;
+  await page.waitForTimeout(200);
+
+  expect(outlineRequests).toHaveLength(0);
+  expect(await page.evaluate(() => document.querySelector('#outline').dataset.marker)).toBe(
+    'kept'
+  );
+  await expect(line(page, 'b').locator('.title')).toHaveText('Projet B renommé');
+  await expect(line(page, 'b').locator('.title')).toHaveAttribute(
+    'data-title',
+    'Projet B renommé'
+  );
+});
+
+test('13.2 un champ ouvert sur une autre ligne survit à un enregistrement différé', async ({
+  touchPage,
+}) => {
+  await touchPage.goto(domainPath);
+  await touchPage.route('**/api/nodes/a', async (route) => {
+    if (route.request().method() !== 'PUT') return route.continue();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    return route.continue();
+  });
+
+  const first = await enterEdit(touchPage, 'a');
+  await first.fill('Projet A renommé');
+  await line(touchPage, 'b').locator('.title').tap();
+
+  const second = line(touchPage, 'b').locator('.title-input');
+  await expect(second).toBeVisible();
+  await expect(second).toBeFocused();
+
+  // The PUT of line A lands after B's field opened: B must keep its content and
+  // its focus, which the old full-outline refresh destroyed.
+  await touchPage.waitForTimeout(800);
+  await expect(second).toBeFocused();
+  await expect(second).toHaveValue('Projet B');
+});
+
+test('13.3 éditer un titre long ne change ni sa hauteur ni la ligne suivante', async ({
+  touchPage,
+}) => {
+  await resetDomainTo(MOBILE_EDIT_FIXTURE);
+  await touchPage.goto(domainPath);
+
+  const before = await longEditGeometry(touchPage);
+  expect(before.height).toBeGreaterThan(39.6);
+
+  await line(touchPage, 'long').locator('.title').tap();
+  const input = line(touchPage, 'long').locator('.title-input');
+  await expect(input).toBeVisible();
+  await touchPage.waitForTimeout(150);
+
+  const during = await longEditGeometry(touchPage);
+  expect(Math.abs(during.height - before.height)).toBeLessThanOrEqual(1);
+  expect(Math.abs(during.top - before.top)).toBeLessThanOrEqual(1);
+
+  await touchPage.keyboard.press('Escape');
+  await touchPage.waitForTimeout(150);
+  const after = await longEditGeometry(touchPage);
+  expect(Math.abs(after.height - before.height)).toBeLessThanOrEqual(1);
+  expect(Math.abs(after.top - before.top)).toBeLessThanOrEqual(1);
+});
+
+test('13.4 la ligne en édition reste marquée, puis perd sa marque', async ({ touchPage }) => {
+  await touchPage.goto(domainPath);
+  await line(touchPage, 'b').locator('.title').tap();
+  await expect(line(touchPage, 'b')).toHaveClass(/editing/);
+  await expect(line(touchPage, 'c')).not.toHaveClass(/editing/);
+
+  await touchPage.keyboard.press('Escape');
+  await expect(line(touchPage, 'b')).not.toHaveClass(/editing/);
+
+  await line(touchPage, 'b').locator('.title').tap();
+  await expect(line(touchPage, 'b')).toHaveClass(/editing/);
+  await touchPage.locator('#topbar h1').tap();
+  await expect(line(touchPage, 'b')).not.toHaveClass(/editing/);
+});
+
+test('13.5 le bandeau n’est pas remesuré pendant l’édition, puis l’est à la fermeture', async ({
+  touchPage,
+}) => {
+  await touchPage.goto(domainPath);
+  await touchPage.waitForTimeout(100);
+  await touchPage.evaluate(() => {
+    window.__barStyleWrites = 0;
+    const bar = document.getElementById('ancestry');
+    new MutationObserver(() => {
+      window.__barStyleWrites += 1;
+    }).observe(bar, { attributes: true, attributeFilter: ['style'] });
+  });
+
+  await line(touchPage, 'b').locator('.title').tap();
+  await expect(line(touchPage, 'b')).toHaveClass(/editing/);
+
+  // A layout-viewport resize (what an engine that resizes for the keyboard
+  // reports) must not re-measure and animate the bar while the field is open.
+  await touchPage.setViewportSize({ width: 390, height: 600 });
+  await touchPage.waitForTimeout(400);
+  expect(await touchPage.evaluate(() => window.__barStyleWrites)).toBe(0);
+
+  await touchPage.keyboard.press('Escape');
+  await touchPage.waitForTimeout(300);
+  expect(await touchPage.evaluate(() => window.__barStyleWrites)).toBeGreaterThan(0);
+});
+
+test('13.6 le mouvement réduit supprime la transition et le défilement animé', async ({
+  browser,
+}) => {
+  const context = await browser.newContext({
+    storageState: STATE_FILE,
+    baseURL: ORIGIN,
+    viewport: { width: 390, height: 844 },
+    hasTouch: true,
+    isMobile: true,
+    reducedMotion: 'reduce',
+  });
+  const page = await context.newPage();
+  try {
+    await page.addInitScript(() => {
+      window.__scrollBehaviors = [];
+      const original = Element.prototype.scrollIntoView;
+      Element.prototype.scrollIntoView = function (options) {
+        window.__scrollBehaviors.push(
+          options && options.behavior ? options.behavior : 'default'
+        );
+        return original.call(this, options);
+      };
+    });
+    await page.goto(domainPath);
+    await line(page, 'b').locator('.title').tap();
+    await expect(line(page, 'b')).toHaveClass(/editing/);
+
+    const transition = await line(page, 'b').evaluate(
+      (el) => getComputedStyle(el).transitionDuration
+    );
+    expect(transition).toBe('0s');
+
+    // The delayed reveal runs after the bounded wait; it must not be smooth.
+    await page.waitForTimeout(500);
+    const behaviors = await page.evaluate(() => window.__scrollBehaviors);
+    expect(behaviors).toContain('auto');
+  } finally {
+    await context.close();
+  }
+});
+
+test('13.7 une réponse Entrée retardée ne remplace pas un champ ouvert', async ({ page }) => {
+  await page.goto(domainPath);
+  await page.route('**/api/nodes/b/next', async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    return route.continue();
+  });
+
+  await enterEdit(page, 'b');
+  await page.keyboard.press('Enter');
+  // The line-creation request is in flight; open another line before it returns.
+  await line(page, 'a').locator('.title').click();
+  const other = line(page, 'a').locator('.title-input');
+  await expect(other).toBeVisible();
+  await expect(other).toBeFocused();
+
+  await page.waitForTimeout(800);
+  await expect(other).toBeVisible();
+  await expect(other).toBeFocused();
+
+  // Closing the newer field applies the deferred refresh: the line created by
+  // the earlier Enter is not lost, it simply appears now.
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#outline .line')).toHaveCount(4);
+  await expect(page.locator('#outline .line').nth(2)).toHaveAttribute('data-id', 'b');
 });

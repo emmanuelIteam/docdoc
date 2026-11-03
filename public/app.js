@@ -12,12 +12,37 @@ function domainPath(route) {
   return '/domaine/' + activeSlug + '/' + String(route).replace(/^\//, '');
 }
 
+// A refresh requested while a title is being edited is deferred: replacing
+// `#outline` would detach the field the user is typing in (and close the
+// keyboard). It is applied as soon as the last field closes. Declared before
+// the two helpers that read it so their top-level definitions see it.
+let outlineRefreshPending = false;
+
+// Every `startRename` bumps this counter. A save or a structural response
+// captures it, so a reply that lands after another field was opened can tell it
+// is stale: replacing the outline then would destroy the newer field.
+let editGeneration = 0;
+
 function reloadOutline() {
+  if (document.querySelector('.title-input')) {
+    outlineRefreshPending = true;
+    return;
+  }
+  // The refresh is starting: no deferred request is left to apply, even when the
+  // swap is performed by htmx below (and therefore not by `swapOutlineHtml`).
+  outlineRefreshPending = false;
   if (window.htmx) {
     htmx.ajax('GET', domainPath('/outline-fragment'), { target: '#outline', swap: 'outerHTML' });
   } else {
     location.reload();
   }
+}
+
+// Apply the deferred refresh once no edit field owns the screen.
+function flushOutlineRefresh() {
+  if (!outlineRefreshPending || document.querySelector('.title-input')) return;
+  outlineRefreshPending = false;
+  reloadOutline();
 }
 
 // Replace the outline with a server-rendered fragment. Assigning `outerHTML`
@@ -35,7 +60,24 @@ function swapOutlineHtml(html) {
   outlineEl.outerHTML = html;
   const fresh = document.querySelector('#outline');
   if (window.htmx && fresh) htmx.process(fresh);
+  // The fragment just rendered the server's current outline: a refresh that was
+  // waiting for the field to close is no longer needed.
+  outlineRefreshPending = false;
   return fresh;
+}
+
+// Save a title without blocking the interaction: the line is already painted, so
+// the request may finish after the field is gone. `keepalive` lets it survive a
+// navigation that immediately follows the edit. Throws on a refused save, which
+// the structural paths (Enter, Tab) treat as "do not continue".
+async function saveTitle(id, value) {
+  const res = await fetch(domainPath('/api/nodes/' + id), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title: value }),
+    keepalive: true,
+  });
+  if (!res.ok) throw new Error('Renommage refusé (' + res.status + ')');
 }
 
 /* -------------------------------------------------------------------- */
@@ -250,11 +292,70 @@ function caretOffsetAtPoint(span, x, y) {
   return offset;
 }
 
+/* The on-screen keyboard moves the viewport for a few hundred milliseconds. The
+   line is revealed only once it has settled, so the page is moved once by the
+   app instead of once by the browser and again by the app. */
+const REVEAL_SETTLE_MS = 120;
+const REVEAL_FALLBACK_MS = 350;
+
+function prefersReducedMotion() {
+  return Boolean(
+    window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
+}
+
+// `nearest` is the whole point: a line already visible above the keyboard does
+// not move at all, and a hidden one is brought just above it. The scroll pad
+// (the keyboard inset) is declared on `:root` in style.css.
+function revealLine(line, generation) {
+  // A reveal that fires after the field closed (fast open/close) must not move
+  // the page: the user is no longer editing there.
+  if (generation !== editGeneration || !line.isConnected) return;
+  if (!line.querySelector('.title-input')) return;
+  line.scrollIntoView({
+    block: 'nearest',
+    behavior: prefersReducedMotion() ? 'auto' : 'smooth',
+  });
+}
+
+// Wait for the visual viewport to stop changing (keyboard animation), then reveal
+// the line once. The fallback covers engines that report no viewport event.
+function scheduleReveal(line, generation) {
+  if (!line) return;
+  const viewport = window.visualViewport;
+  if (!viewport) {
+    setTimeout(() => revealLine(line, generation), REVEAL_FALLBACK_MS);
+    return;
+  }
+  let settleTimer = 0;
+  let fallbackTimer = 0;
+  const fire = () => {
+    clearTimeout(settleTimer);
+    clearTimeout(fallbackTimer);
+    viewport.removeEventListener('resize', onViewportChange);
+    viewport.removeEventListener('scroll', onViewportChange);
+    revealLine(line, generation);
+  };
+  const onViewportChange = () => {
+    // A real keyboard resize is happening: rely on the debounce, not the
+    // bounded wait, so a slow keyboard is not cut short.
+    clearTimeout(fallbackTimer);
+    clearTimeout(settleTimer);
+    settleTimer = setTimeout(fire, REVEAL_SETTLE_MS);
+  };
+  viewport.addEventListener('resize', onViewportChange);
+  viewport.addEventListener('scroll', onViewportChange);
+  fallbackTimer = setTimeout(fire, REVEAL_FALLBACK_MS);
+}
+
 function startRename(span, clientX, clientY, forceEnd, selectAll, caretAt) {
   const id = span.dataset.id;
   // The source may contain link syntax even though the span only displays the
   // labels, so the editor always starts from `data-title` when available.
   const original = span.dataset.title || span.textContent;
+  // Captured by the save and structural paths: a reply whose generation is no
+  // longer current belongs to a field the user has already left for another.
+  const generation = ++editGeneration;
   let done = false;
   // Caret offset to restore after a keyboard reindent reopened this field.
   let reindentCaret = original.length;
@@ -275,12 +376,37 @@ function startRename(span, clientX, clientY, forceEnd, selectAll, caretAt) {
   // retyped since the click that opened the field.
   if (Number.isFinite(caretAt)) caret = Math.max(0, Math.min(caretAt, original.length));
 
-  const input = document.createElement('input');
-  input.type = 'text';
+  // Measured on the line, not on the span: it already includes the touch
+  // min-height, so pinning the row to this height keeps the lines below exactly
+  // where they are when the field replaces the title (and when it goes back).
+  const line = span.closest('.line');
+  const lineHeight = line ? line.offsetHeight : 0;
+
+  const input = document.createElement('textarea');
   input.className = 'title-input';
+  input.rows = 1;
+  input.wrap = 'soft';
   input.value = original;
+  input.setAttribute('aria-label', 'Titre de la tâche');
   span.replaceWith(input);
-  input.focus();
+  if (line) {
+    line.style.minHeight = lineHeight + 'px';
+    line.classList.add('editing');
+  }
+
+  // Focus without letting the browser choose the scroll position: on a phone it
+  // would pan the visual viewport (or scroll the page) before the keyboard is
+  // even up, and the app would then correct a movement it did not choose.
+  input.focus({ preventScroll: true });
+
+  // The field wraps like the title did: its height follows its content, and the
+  // line's min-height keeps the row from collapsing under it.
+  function autosize() {
+    input.style.height = 'auto';
+    input.style.height = input.scrollHeight + 'px';
+  }
+  autosize();
+  input.addEventListener('input', autosize);
 
   // Apply the caret on the next frame so the browser's own focus/caret handling
   // cannot move it to the end or reset it after we set it.
@@ -288,16 +414,22 @@ function startRename(span, clientX, clientY, forceEnd, selectAll, caretAt) {
     if (done || !input.isConnected) return;
     if (selectAll) input.setSelectionRange(0, original.length);
     else input.setSelectionRange(caret, caret);
+    autosize();
+    // The line is visible in the common case, and `nearest` is then a no-op: it
+    // only protects a line hidden under the sticky header before the keyboard
+    // changes the viewport. The single deliberate move happens after the
+    // viewport settles (see `scheduleReveal`).
+    if (line) line.scrollIntoView({ block: 'nearest' });
+    scheduleReveal(line, generation);
   });
 
-  // Keep the field as wide as the displayed title (plus slack for the caret),
-  // not as wide as the Markdown source: a pasted link's URL would otherwise
-  // blow the field up to the whole width of the page.
-  const sizeInput = () => {
-    input.style.width = Math.max(2, displayTitle(input.value).length + 1) + 'ch';
-  };
-  sizeInput();
-  input.addEventListener('input', sizeInput);
+  // Drop every trace of the editing mode. The class and the pinned height live on
+  // the line, which outlives the field.
+  function releaseEditing() {
+    if (!line) return;
+    line.classList.remove('editing');
+    line.style.removeProperty('min-height');
+  }
 
   const finish = async (save, next, reindent) => {
     if (done) return;
@@ -312,37 +444,47 @@ function startRename(span, clientX, clientY, forceEnd, selectAll, caretAt) {
     paintTitle(replacement, value || original);
 
     input.replaceWith(replacement);
+    releaseEditing();
 
-    // Save a changed title (blur or Enter).
     let titleChanged = false;
+    let savePromise = null;
     if (save && value && value !== original) {
       titleChanged = true;
-      try {
-        await fetch(domainPath('/api/nodes/' + id), {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: value }),
-        });
-      } catch (err) {
-        console.error('Erreur renommage:', err);
-        return;
-      }
+      savePromise = saveTitle(id, value);
     }
+    if (titleChanged) document.dispatchEvent(new CustomEvent('outline:title-changed'));
+    // The bar measured its height with the field open: let it remeasure now that
+    // the field (and the pinned height) are gone.
+    document.dispatchEvent(new CustomEvent('outline:editing-ended'));
 
     // Tab / Shift+Tab: move the line one level, then reopen the edit field on
     // the same line at the same caret so the shortcut can be chained. The title
-    // was saved just above, so the re-rendered outline carries the typed text:
-    // nothing the user typed is lost. The two requests are sequential — the PUT
-    // must land before the reindent re-renders the outline.
+    // is saved first, so the re-rendered outline carries the typed text: nothing
+    // the user typed is lost.
     if (reindent) {
+      try {
+        if (savePromise) await savePromise;
+      } catch (err) {
+        console.error('Erreur renommage:', err);
+        reloadOutline();
+        return;
+      }
       try {
         const res = await fetch(domainPath('/api/nodes/' + id + '/' + reindent), { method: 'POST' });
         if (!res.ok) throw new Error('Réindentation refusée (' + res.status + ')');
         const html = await res.text();
+        if (generation !== editGeneration) {
+          // Another field was opened while the request was in flight: never
+          // replace the outline under it. A fresh fragment is fetched when that
+          // field closes.
+          outlineRefreshPending = true;
+          flushOutlineRefresh();
+          return;
+        }
         // No outline: the page is reloading itself, nothing more to do here.
         if (!swapOutlineHtml(html)) return;
-        const line = document.querySelector('.line[data-id="' + id + '"]');
-        const titleEl = line && line.querySelector('.title');
+        const moved = document.querySelector('.line[data-id="' + id + '"]');
+        const titleEl = moved && moved.querySelector('.title');
         if (titleEl) startRename(titleEl, 0, 0, false, false, reindentCaret);
         // No line: the reindent moved it under a collapsed parent, so it is
         // legitimately hidden now (the outline itself is up to date).
@@ -357,10 +499,22 @@ function startRename(span, clientX, clientY, forceEnd, selectAll, caretAt) {
     // focus it so the user can keep typing.
     if (next) {
       try {
+        if (savePromise) await savePromise;
+      } catch (err) {
+        console.error('Erreur renommage:', err);
+        reloadOutline();
+        return;
+      }
+      try {
         const res = await fetch(domainPath('/api/nodes/' + id + '/next'), { method: 'POST' });
         if (!res.ok) throw new Error('Création de ligne refusée (' + res.status + ')');
         const newId = res.headers.get('X-New-Node-Id');
         const html = await res.text();
+        if (generation !== editGeneration) {
+          outlineRefreshPending = true;
+          flushOutlineRefresh();
+          return;
+        }
         if (!swapOutlineHtml(html)) return;
         if (newId) {
           const newLine = document.querySelector('.line[data-id="' + newId + '"]');
@@ -374,8 +528,17 @@ function startRename(span, clientX, clientY, forceEnd, selectAll, caretAt) {
       return;
     }
 
-    // No sibling (blur/save): refresh only when the title changed.
-    if (titleChanged) reloadOutline();
+    // Plain save: the line is already painted and the field is gone. The request
+    // finishes in the background and the outline is NOT re-rendered here: that
+    // swap used to happen exactly when the keyboard closes, and it could destroy
+    // a field opened on another line before the save completed.
+    if (savePromise) {
+      savePromise
+        .catch((err) => console.error('Erreur renommage:', err))
+        .finally(flushOutlineRefresh);
+    } else {
+      flushOutlineRefresh();
+    }
   };
 
   input.addEventListener('keydown', (e) => {
@@ -395,8 +558,6 @@ function startRename(span, clientX, clientY, forceEnd, selectAll, caretAt) {
       // back on <body> and a selected line would be reindented a second time.
       e.stopPropagation();
       const direction = e.shiftKey ? 'outdent' : 'indent';
-      // The span is detached by now, so the line is resolved from the field.
-      const line = input.closest('.line');
       if (!canReindent(line, direction)) return; // impossible: stay put, silently
       reindentCaret = input.selectionStart === null ? original.length : input.selectionStart;
       finish(true, false, direction);
@@ -959,7 +1120,7 @@ document.addEventListener('pointercancel', (e) => {
 });
 
 /* -------------------------------------------------------------------- */
-/* Sidebar: toggle collapse + close after a domain pick on a phone.      */
+/* Sidebar: toggle collapse + fold after a page entry on a phone.        */
 /* The collapsed state is persisted in localStorage so it survives       */
 /* navigation (each page is a full load and re-applies the state).       */
 /* -------------------------------------------------------------------- */
@@ -968,7 +1129,19 @@ document.addEventListener('pointercancel', (e) => {
 // same 640px breakpoint as the outline's narrow-screen rules.
 const SIDEBAR_NARROW = '(max-width: 640px)';
 
-// One state, one key: the toggle and the automatic close after a domain pick
+// The fold happens on the page that was just opened, never on the page being
+// left: the new page is shown first, then the panel tucks itself away. The
+// intent travels across the full load in sessionStorage, and the fold starts
+// once the content's fade (`page-fade-in`, .2s in style.css) is over, with a
+// short pause so the two movements never overlap.
+const SIDEBAR_COLLAPSE_FLAG = 'sidebarCollapseOnLoad';
+const SIDEBAR_COLLAPSE_DELAY_MS = 300;
+// A fold request is only meaningful for the navigation it was made for: if the
+// navigation never completed (cancelled, blocked), the stale request must not
+// fold the panel of an unrelated page opened later.
+const SIDEBAR_COLLAPSE_FLAG_TTL_MS = 15000;
+
+// One state, one key: the toggle and the automatic close after a page entry
 // both go through here, so the panel can never hold two different states.
 function setSidebarCollapsed(collapsed) {
   document.body.classList.toggle('sidebar-collapsed', collapsed);
@@ -976,6 +1149,26 @@ function setSidebarCollapsed(collapsed) {
 }
 
 function applySidebarState() {
+  let pendingFold = null;
+  try {
+    pendingFold = sessionStorage.getItem(SIDEBAR_COLLAPSE_FLAG);
+    if (pendingFold) sessionStorage.removeItem(SIDEBAR_COLLAPSE_FLAG);
+  } catch (err) {
+    // Storage unavailable (private mode, embedded frame): behave as before.
+  }
+  const requestedAt = Number(pendingFold);
+
+  if (pendingFold && Date.now() - requestedAt < SIDEBAR_COLLAPSE_FLAG_TTL_MS) {
+    // The page has appeared; the panel can fold. Reduced motion applies the
+    // state without a movement, so the page simply arrives collapsed.
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      setSidebarCollapsed(true);
+    } else {
+      window.setTimeout(() => setSidebarCollapsed(true), SIDEBAR_COLLAPSE_DELAY_MS);
+    }
+    return;
+  }
+
   if (localStorage.getItem('sidebarCollapsed') === '1') {
     document.body.classList.add('sidebar-collapsed');
   }
@@ -992,16 +1185,35 @@ if (sidebarToggle) {
 // that was asked for gets the whole width. Every anchor in the panel is such an
 // entry — home, a domain, administration, help, passkeys — while the commands
 // that do not navigate are a button and a form, excluded by construction. The
-// navigation below is a full page load: the state is persisted, and the
-// destination page renders already collapsed. A modified click (new tab, new
-// window) leaves the current page's panel alone.
+// link is followed at once: the destination page renders with the panel open
+// and fades in, then folds the panel. A modified click (new tab, new window)
+// leaves the current page's panel alone.
 document.addEventListener('click', (e) => {
   if (e.defaultPrevented || e.button !== 0) return;
   if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
   const link = e.target.closest && e.target.closest('#sidebar a[href]');
   if (!link) return;
   if (!window.matchMedia(SIDEBAR_NARROW).matches) return;
-  setSidebarCollapsed(true);
+
+  // Already folded: the destination reads the persisted state, nothing to ask.
+  if (document.body.classList.contains('sidebar-collapsed')) return;
+
+  // The passkeys screen has no panel of its own, so there is nothing to fold
+  // there: persist the state now instead of leaving a pending fold for the
+  // next page that happens to show the panel.
+  const target = new URL(link.href, window.location.href);
+  if (target.pathname.startsWith('/auth/')) {
+    setSidebarCollapsed(true);
+    return;
+  }
+
+  try {
+    sessionStorage.setItem(SIDEBAR_COLLAPSE_FLAG, String(Date.now()));
+  } catch (err) {
+    // Without storage the intent cannot travel: fold the panel right here, as
+    // before, rather than not folding at all.
+    setSidebarCollapsed(true);
+  }
 });
 
 /* -------------------------------------------------------------------- */
@@ -1251,14 +1463,20 @@ document.addEventListener('click', (e) => {
   function update() {
     pending = false;
     refreshIndex();
-    refreshReserve();
+    // While a title is being edited, the bar keeps the height it had when the
+    // field opened: on the engines that resize the layout viewport for the
+    // keyboard (older Chrome, Firefox Android, WebView), remeasuring now would
+    // resize the bar and push the outline while the user is typing. The scroll
+    // still moves the chain; only the height is frozen.
+    const editing = Boolean(document.querySelector('.title-input'));
+    if (!editing) refreshReserve();
     const rect = topbar.getBoundingClientRect();
     topbar.classList.toggle('is-stuck', rect.top <= 0);
     const first = firstVisibleLine(rect.bottom);
     const { chain, fraction } = chainOf(first, rect.bottom);
     const previousBarHeight = bar.offsetHeight;
     const chainChanged = renderChain(chain, fraction);
-    if (chainChanged || window.innerHeight !== lastInnerHeight) {
+    if (chainChanged || (!editing && window.innerHeight !== lastInnerHeight)) {
       lastInnerHeight = window.innerHeight;
       barTarget = sizeBar(previousBarHeight);
       // The bottom reserve follows the same transition, so the document height
@@ -1284,6 +1502,10 @@ document.addEventListener('click', (e) => {
 
   window.addEventListener('scroll', schedule, { passive: true });
   window.addEventListener('resize', schedule);
+  // A locally painted title (or the end of an edit) changes the labels the bar
+  // shows, and releases the height it froze: recompute once the DOM is settled.
+  document.addEventListener('outline:title-changed', schedule);
+  document.addEventListener('outline:editing-ended', schedule);
   // Collapsing the sidebar widens the column, so wrapped titles move the rows:
   // recompute once the new layout is in place.
   const sidebarToggleBtn = document.getElementById('sidebar-toggle');
@@ -1294,6 +1516,33 @@ document.addEventListener('click', (e) => {
     document.body.addEventListener('htmx:afterSettle', schedule);
   }
   schedule();
+})();
+
+/* -------------------------------------------------------------------- */
+/* Keyboard inset: the part of the layout viewport hidden by the phone's */
+/* on-screen keyboard, published for `scroll-padding-bottom` (style.css).*/
+/* `resizes-visual` engines (iOS, Chrome 108+) leave `innerHeight`       */
+/* unchanged and shrink the visual viewport; `resizes-content` engines   */
+/* shrink both, and the inset is then 0. A pinch zoom is not a keyboard. */
+/* -------------------------------------------------------------------- */
+
+(function initKeyboardInset() {
+  const viewport = window.visualViewport;
+  if (!viewport) return;
+  const root = document.documentElement;
+
+  function publish() {
+    if (viewport.scale !== 1) {
+      root.style.setProperty('--keyboard-inset', '0px');
+      return;
+    }
+    const inset = Math.max(0, window.innerHeight - (viewport.offsetTop + viewport.height));
+    root.style.setProperty('--keyboard-inset', inset + 'px');
+  }
+
+  viewport.addEventListener('resize', publish);
+  viewport.addEventListener('scroll', publish);
+  publish();
 })();
 
 /* -------------------------------------------------------------------- */
@@ -1514,6 +1763,10 @@ document.addEventListener('click', (e) => {
 });
 
 applySidebarState();
+// Enable the panel's transition only once the persisted state is painted: a
+// page that arrives with the panel already collapsed must not replay the
+// collapse. From the next frame on, a click animates it.
+requestAnimationFrame(() => document.body.classList.add('sidebar-ready'));
 
 // An expired session must send the browser back to the home page instead of
 // letting a 401 body be swapped into #outline. The server sets HX-Redirect on

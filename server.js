@@ -1152,11 +1152,26 @@ function renderPage(space, domain, expandIds) {
   );
 }
 
-// The in-progress lines of every domain, in the order the sidebar lists the
-// domains and, inside a domain, in the outline's display order. The display
-// order is repaired first, so a line is listed even when its persisted order was
-// incomplete. The function only reads the in-memory space: the homepage must not
-// create the default project of an empty domain nor persist anything.
+// The parent chain of a line, top-down: the level-1 project first, the immediate
+// parent last. Read from the outline index (parent pointers), so it follows the
+// tree no matter how the lines are displayed.
+function ancestorChain(index, id) {
+  const chain = [];
+  let entry = index.get(id);
+  while (entry && entry.parent) {
+    chain.unshift(entry.parent);
+    entry = index.get(entry.parent.id);
+  }
+  return chain;
+}
+
+// The in-progress leaf lines of every domain, in the order the sidebar lists the
+// domains and, inside a domain, in the outline's display order. Only a line
+// without children is listed: a parent is a grouping, not work to do, and listing
+// it would crowd out the leaves it contains. The display order is repaired first,
+// so a leaf is listed even when its persisted order was incomplete. The function
+// only reads the in-memory space: the homepage must not create the default
+// project of an empty domain nor persist anything.
 function homeTasks(space) {
   const tasks = [];
   for (const summary of space.domainList) {
@@ -1166,24 +1181,38 @@ function homeTasks(space) {
     for (const id of ensureDisplayOrder(domain.projects, domain.displayOrder)) {
       const entry = index.get(id);
       if (!entry || entry.node.status !== 'in_progress') continue;
-      tasks.push({ domain, node: entry.node });
+      if (entry.node.children && entry.node.children.length) continue;
+      tasks.push({ domain, node: entry.node, ancestors: ancestorChain(index, entry.node.id) });
     }
   }
   return tasks;
 }
 
-// One entry per in-progress line. The whole row is the existing deep link: it
+// One entry per in-progress leaf. The whole row is the existing deep link: it
 // opens the domain with the task's ancestors expanded (`?reveal`), scrolls to the
-// line and highlights it (`#node-<id>`). The title is plain text, because an
-// inline task link would nest an anchor inside the entry's anchor; the domain
-// name is repeated on every row so two tasks with the same title stay
-// distinguishable.
-function homeTaskEntry(domain, node) {
+// line and highlights it (`#node-<id>`). The title occupies the first line; the
+// domain name and the chain of parent tasks occupy the second one, which keeps
+// two leaves with the same title distinguishable even inside one domain. Every
+// title is plain text, because an inline task link would nest an anchor inside
+// the entry's anchor.
+function homeTaskEntry(domain, node, ancestors) {
   const href = `/domaine/${domain.slug}?reveal=${node.id}#node-${node.id}`;
+  const chain = ancestors
+    .map(
+      (ancestor) =>
+        `<span class="home-task-hop">` +
+        `<span class="home-task-sep" aria-hidden="true">›</span>` +
+        `<span class="home-task-parent">${escapeHtml(titleLabel(ancestor.title))}</span>` +
+        `</span>`
+    )
+    .join('');
   return (
     `<li><a class="home-task" href="${escapeHtml(href)}">` +
     `<span class="home-task-title">${escapeHtml(titleLabel(node.title))}</span>` +
+    `<span class="home-task-context">` +
     `<span class="home-task-domain">${escapeHtml(domain.name)}</span>` +
+    `${chain}` +
+    `</span>` +
     `</a></li>`
   );
 }
@@ -1196,10 +1225,10 @@ function renderHomePage(space) {
       '<div class="empty-state"><h2>Aucun domaine</h2><p>Créez un domaine depuis la page <a href="/administration">Administration</a> pour regrouper vos projets.</p></div>';
   } else if (!tasks.length) {
     content =
-      '<div class="empty-state"><h2>Aucune tâche en cours</h2><p>Aucune ligne n’est marquée « En cours ». Ouvrez le menu d’une ligne et choisissez « En cours » pour la retrouver ici.</p></div>';
+      '<div class="empty-state"><h2>Aucune tâche en cours</h2><p>Aucune tâche sans sous-tâche n’est marquée « En cours ». Ouvrez le menu d’une ligne sans sous-tâche et choisissez « En cours » pour la retrouver ici.</p></div>';
   } else {
     content = `<ul class="home-tasks">${tasks
-      .map(({ domain, node }) => homeTaskEntry(domain, node))
+      .map(({ domain, node, ancestors }) => homeTaskEntry(domain, node, ancestors))
       .join('')}</ul>`;
   }
   return renderShell(space, content, null, { title: 'Tâches en cours', home: true });
@@ -1441,7 +1470,7 @@ function renderGuidePage(space) {
 
     <section class="guide-section">
       <h2>Retrouver les tâches en cours</h2>
-      <p>La page d'accueil, à la racine, rassemble toutes les tâches marquées « En cours », tous domaines confondus, et rappelle le nom du domaine sur chaque ligne. Cliquez sur une tâche pour l'ouvrir dans son domaine, avec ses tâches mères dépliées et la ligne mise en évidence.</p>
+      <p>La page d'accueil, à la racine, rassemble les tâches marquées « En cours » qui n'ont pas de sous-tâche, tous domaines confondus. Sur chaque entrée, la seconde ligne rappelle le nom du domaine puis la hiérarchie de ses tâches mères. Cliquez sur une tâche pour l'ouvrir dans son domaine, avec ses tâches mères dépliées et la ligne mise en évidence.</p>
     </section>
 
     <section class="guide-section">

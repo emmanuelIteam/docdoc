@@ -493,3 +493,105 @@ test("1.8 sur un smartphone, la barre d'étiquettes s'efface derrière le pannea
 
   await context.close();
 });
+
+/* ------------------------------------------------------------------ */
+/* 1.9 The page appears first, then the panel folds                    */
+/* ------------------------------------------------------------------ */
+
+// Installed in every document of the context: records when the page is ready
+// and when the panel starts folding, so the test can prove the order.
+function recordSidebarTiming() {
+  window.__sidebarTiming = {
+    readyAt: null,
+    collapsedAtReady: null,
+    collapseAt: null,
+    widthDuring: null,
+  };
+  document.addEventListener('DOMContentLoaded', () => {
+    const timing = window.__sidebarTiming;
+    timing.readyAt = performance.now();
+    timing.collapsedAtReady = document.body.classList.contains('sidebar-collapsed');
+    const observer = new MutationObserver(() => {
+      if (timing.collapseAt !== null) return;
+      if (!document.body.classList.contains('sidebar-collapsed')) return;
+      timing.collapseAt = performance.now();
+      observer.disconnect();
+      // Part-way into the fold, the width must be intermediate.
+      window.setTimeout(() => {
+        timing.widthDuring = document.getElementById('sidebar').getBoundingClientRect().width;
+      }, 100);
+    });
+    observer.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+  });
+}
+
+test('1.9 sur un smartphone, la page apparaît d’abord, puis le panneau se replie', async ({ browser }) => {
+  const { context, page } = await signedInPage(browser, {
+    viewport: PHONE,
+    hasTouch: true,
+    isMobile: true,
+  });
+  await context.addInitScript(recordSidebarTiming);
+
+  await page.goto('/domaine/e2e');
+  await expect(page.locator('#sidebar')).toHaveCSS('width', '240px');
+
+  await domainLink(page, 'e2e2').click();
+  await page.waitForURL(/\/domaine\/e2e2$/);
+
+  // The new page arrives with the panel still open and its content fading in;
+  // the fold is asked for afterwards.
+  const fade = await page.locator('.content').evaluate((el) => {
+    const style = getComputedStyle(el);
+    return { name: style.animationName, duration: style.animationDuration };
+  });
+  expect(fade.name).toBe('page-fade-in');
+  expect(parseFloat(fade.duration)).toBeGreaterThan(0);
+
+  await page.waitForFunction(
+    () => window.__sidebarTiming && window.__sidebarTiming.widthDuring !== null
+  );
+  const timing = await page.evaluate(() => window.__sidebarTiming);
+  // The panel was open when the page was ready, and the fold only starts once
+  // the fade is over.
+  expect(timing.collapsedAtReady).toBe(false);
+  expect(timing.collapseAt - timing.readyAt).toBeGreaterThanOrEqual(200);
+  // It is a movement, not a jump: the width is intermediate during the fold.
+  expect(timing.widthDuring).toBeGreaterThan(0);
+  expect(timing.widthDuring).toBeLessThan(240);
+
+  await expect(page.locator('body')).toHaveClass(/sidebar-collapsed/);
+  await expect(page.locator('#sidebar')).toHaveCSS('width', '0px');
+  expect(await collapsedKey(page)).toBe('1');
+
+  await context.close();
+});
+
+/* ------------------------------------------------------------------ */
+/* 1.10 Reduced motion: no collapse animation, no fade                 */
+/* ------------------------------------------------------------------ */
+
+test('1.10 avec mouvement réduit, la page et le repli sont immédiats, sans fondu', async ({ browser }) => {
+  const { context, page } = await signedInPage(browser, {
+    viewport: PHONE,
+    hasTouch: true,
+    isMobile: true,
+    reducedMotion: 'reduce',
+  });
+
+  await page.goto('/domaine/e2e');
+  await expect(page.locator('#sidebar')).toHaveCSS('width', '240px');
+
+  // The two animations are neutralised before any click.
+  expect(await page.locator('#sidebar').evaluate((el) => getComputedStyle(el).transitionDuration)).toBe('0s');
+  expect(await page.locator('.content').evaluate((el) => getComputedStyle(el).animationName)).toBe('none');
+
+  // The panel is folded on the next page, without a movement or a fade.
+  await domainLink(page, 'e2e2').click();
+  await page.waitForURL(/\/domaine\/e2e2$/);
+  await expect(page.locator('body')).toHaveClass(/sidebar-collapsed/);
+  expect(await page.locator('.content').evaluate((el) => getComputedStyle(el).animationName)).toBe('none');
+  expect(await collapsedKey(page)).toBe('1');
+
+  await context.close();
+});

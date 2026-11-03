@@ -1,7 +1,7 @@
 'use strict';
 
-// End-to-end checks of the homepage (openspec change add-homepage-open-tasks,
-// tasks 4.4 to 4.7).
+// End-to-end checks of the homepage (openspec changes add-homepage-open-tasks
+// and list-leaf-tasks-with-parent-hierarchy).
 //
 // The application is started as a *child process* (as in administration.spec.js
 // and sidebar.spec.js): its configuration is read once at require time, and the
@@ -10,8 +10,8 @@
 // Two accounts are authorized. Account A enrolls first and adopts the two
 // fixture domains written to the throwaway data directory; the legacy files are
 // then removed so account B starts with an empty space. Account B is used for
-// the two empty states: no domain at all, then a domain without any in-progress
-// line.
+// the empty states: no domain at all, a domain without any in-progress line,
+// and only parent lines in progress.
 //
 // Run with: npm run test:e2e
 
@@ -137,10 +137,13 @@ async function enroll(page, email) {
 /* Fixtures                                                            */
 /* ------------------------------------------------------------------ */
 
-// Domain A: in-progress lines at three depths (a1, a1-1, a1-1-1), an
-// in-progress line hidden under a collapsed parent (a2-1), a title repeated in
-// domain B (a3), and lines that must not be listed (a1-2 todo, a4 and a4-1
-// done). The display order interleaves them so the listing order is checked.
+// Domain A: in-progress leaves at several depths (a1-1-1, a2-1, a2-2) and
+// in-progress parents (a1, a1-1) that must not be listed. a2-2 and a3 share a
+// title inside the same domain but have different chains; a3 and b1 share it
+// across domains. a2 carries a long title so the chain has to wrap on a narrow
+// screen. The lines that must not be listed are a1-2 (todo), a4 and a4-1 (done),
+// and b2 (todo). The display order interleaves them so the listing order is
+// checked.
 const DOMAIN_A = {
   id: 'home-dom-a',
   name: 'Domaine A',
@@ -174,11 +177,12 @@ const DOMAIN_A = {
     },
     {
       id: 'a2',
-      title: 'Projet A2 replié',
+      title: 'Projet A2 replié avec un titre de tâche mère volontairement long',
       status: 'todo',
       collapsed: true,
       children: [
         { id: 'a2-1', title: 'Tâche A2.1 cachée', status: 'in_progress', collapsed: false, children: [] },
+        { id: 'a2-2', title: 'Projet partagé', status: 'in_progress', collapsed: false, children: [] },
       ],
     },
     { id: 'a3', title: 'Projet partagé', status: 'in_progress', collapsed: false, children: [] },
@@ -192,7 +196,7 @@ const DOMAIN_A = {
       ],
     },
   ],
-  displayOrder: ['a1', 'a1-1', 'a1-1-1', 'a1-2', 'a2', 'a2-1', 'a3', 'a4', 'a4-1'],
+  displayOrder: ['a1', 'a1-1', 'a1-1-1', 'a1-2', 'a2', 'a2-1', 'a2-2', 'a3', 'a4', 'a4-1'],
 };
 
 // Domain B: the same title as a3, plus a todo line. Listed after domain A.
@@ -294,18 +298,17 @@ test.afterAll(async () => {
 /* 1.1 The aggregate listing                                           */
 /* ------------------------------------------------------------------ */
 
-test("1.1 la page d'accueil liste les tâches en cours de tous les domaines, dans l'ordre", async ({ browser }) => {
+test("1.1 la page d'accueil ne liste que les tâches feuilles en cours, dans l'ordre", async ({ browser }) => {
   const { context, page } = await signedInPage(browser, stateA);
 
   await page.goto('/');
   await expect(page.locator('.topbar h1')).toHaveText('Tâches en cours');
 
-  // Domains in sidebar order, then the outline's display order inside a domain.
+  // Only leaves, in sidebar domain order then in the outline's display order.
   await expect(taskTitles(page)).toHaveText([
-    'Projet A1',
-    'Tâche A1.1',
     'Sous-tâche A1.1.1',
     'Tâche A2.1 cachée',
+    'Projet partagé',
     'Projet partagé',
     'Projet partagé',
   ]);
@@ -316,9 +319,35 @@ test("1.1 la page d'accueil liste les tâches en cours de tous les domaines, dan
     'Domaine A',
     'Domaine A',
     'Domaine A',
-    'Domaine A',
     'Domaine B',
   ]);
+
+  // In-progress parents are not entries, even though their titles appear in the
+  // context line of their leaves: the absence is checked by href, not by text.
+  await expect(page.locator(homeTask('domaine-a', 'a1'))).toHaveCount(0);
+  await expect(page.locator(homeTask('domaine-a', 'a1-1'))).toHaveCount(0);
+
+  // The second line carries the domain, then the parents from the top-level
+  // project down to the immediate parent.
+  const parentsOf = (slug, id) =>
+    page.locator(homeTask(slug, id)).locator('.home-task-parent');
+  const domainOf = (slug, id) =>
+    page.locator(homeTask(slug, id)).locator('.home-task-domain');
+  await expect(domainOf('domaine-a', 'a1-1-1')).toHaveText('Domaine A');
+  await expect(parentsOf('domaine-a', 'a1-1-1')).toHaveText(['Projet A1', 'Tâche A1.1']);
+  await expect(domainOf('domaine-a', 'a2-1')).toHaveText('Domaine A');
+  await expect(parentsOf('domaine-a', 'a2-1')).toHaveText([
+    'Projet A2 replié avec un titre de tâche mère volontairement long',
+  ]);
+  // Same title as a3, but in another branch: the chain distinguishes them.
+  await expect(parentsOf('domaine-a', 'a2-2')).toHaveText([
+    'Projet A2 replié avec un titre de tâche mère volontairement long',
+  ]);
+  // A leaf without parent shows its domain alone.
+  await expect(domainOf('domaine-a', 'a3')).toHaveText('Domaine A');
+  await expect(parentsOf('domaine-a', 'a3')).toHaveCount(0);
+  await expect(domainOf('domaine-b', 'b1')).toHaveText('Domaine B');
+  await expect(parentsOf('domaine-b', 'b1')).toHaveCount(0);
 
   // Todo and done lines are not listed, at any depth.
   for (const title of ['Tâche A1.2', 'Projet A4 terminé', 'Tâche A4.1 terminée', 'Projet B2']) {
@@ -329,7 +358,7 @@ test("1.1 la page d'accueil liste les tâches en cours de tous les domaines, dan
   await expect(page.locator(homeTask('domaine-a', 'a3'))).toHaveCount(1);
   await expect(page.locator(homeTask('domaine-b', 'b1'))).toHaveCount(1);
 
-  // A line hidden on its domain page by a collapsed ancestor is still listed.
+  // A leaf hidden on its domain page by a collapsed ancestor is still listed.
   await page.goto('/domaine/domaine-a');
   await expect(page.locator('#node-a2-1')).toHaveCount(0);
   await page.goto('/');
@@ -450,6 +479,88 @@ test('1.5 les états vides : aucun domaine, puis aucune tâche en cours', async 
 
   await page.goto('/');
   await expect(page.locator('.empty-state h2')).toHaveText('Aucune tâche en cours');
+  await expect(page.locator('.home-task')).toHaveCount(0);
+
+  await context.close();
+});
+
+/* ------------------------------------------------------------------ */
+/* 1.6 Narrow screen: the context line wraps                           */
+/* ------------------------------------------------------------------ */
+
+test('1.6 en 390 px la seconde ligne revient à la ligne sans troncature ni débordement', async ({ browser }) => {
+  const { context, page } = await signedInPage(browser, stateA);
+  await page.setViewportSize({ width: 390, height: 800 });
+  await page.goto('/');
+
+  const layout = await page.locator(homeTask('domaine-a', 'a2-1')).evaluate((entry) => {
+    const title = entry.querySelector('.home-task-title').getBoundingClientRect();
+    const contextEl = entry.querySelector('.home-task-context');
+    const box = contextEl.getBoundingClientRect();
+    const style = getComputedStyle(contextEl);
+    const lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.4;
+    const parents = [...entry.querySelectorAll('.home-task-parent')];
+    return {
+      titleBottom: title.bottom,
+      contextTop: box.top,
+      contextRight: box.right,
+      contextLines: Math.round(box.height / lineHeight),
+      parentOverflow: parents.some((el) => el.scrollWidth > el.clientWidth + 1),
+      textOverflow: parents.map((el) => getComputedStyle(el).textOverflow),
+      viewportWidth: window.innerWidth,
+      scrollWidth: document.documentElement.scrollWidth,
+    };
+  });
+
+  // The context sits on a second line, below the title, and wraps rather than
+  // being cut: no ellipsis, no overflow, no horizontal scrolling.
+  expect(layout.contextTop).toBeGreaterThanOrEqual(layout.titleBottom - 1);
+  expect(layout.contextLines).toBeGreaterThan(1);
+  expect(layout.textOverflow.every((value) => value !== 'ellipsis')).toBe(true);
+  expect(layout.parentOverflow).toBe(false);
+  expect(layout.contextRight).toBeLessThanOrEqual(layout.viewportWidth);
+  expect(layout.scrollWidth).toBeLessThanOrEqual(layout.viewportWidth);
+
+  await context.close();
+});
+
+/* ------------------------------------------------------------------ */
+/* 1.7 Only parent tasks in progress: the homepage stays empty         */
+/* ------------------------------------------------------------------ */
+
+test("1.7 seules des tâches mères en cours : l'accueil reste vide", async ({ browser }) => {
+  const { context, page } = await signedInPage(browser, stateB);
+
+  // Give account B a domain, then make its only line a parent by adding a child.
+  await page.goto('/administration');
+  const form = page.locator('#admin-domains .admin-create');
+  await form.locator('input[name="name"]').fill('Parents seulement');
+  await form.locator('button[type="submit"]').click();
+  const row = page.locator('#admin-domains-table tbody tr', { hasText: 'Parents seulement' });
+  await expect(row).toHaveCount(1);
+  const href = await row.locator('a.admin-url').getAttribute('href');
+  const slug = href.split('/').pop();
+
+  // Visiting the domain materializes its default line, which becomes the parent.
+  await page.goto(href);
+  const outline = await (await page.request.get(`/domaine/${slug}/api/outline`)).json();
+  const parentId = outline[0].id;
+  const child = await page.request.post(`/domaine/${slug}/api/nodes`, { form: { parentId } });
+  expect(child.ok()).toBeTruthy();
+  // Only the parent goes in progress; its child stays "À faire".
+  await page.request.post(`/domaine/${slug}/api/nodes/${parentId}/status`, {
+    form: { status: 'in_progress', scope: 'head' },
+  });
+
+  // The parent really is in progress on its domain page...
+  await page.goto(href);
+  await expect(page.locator(`#node-${parentId} .title`)).toHaveClass(/status-in-progress/);
+
+  // ...yet the homepage lists nothing: it explains that no leaf is in progress
+  // instead of claiming that no line is.
+  await page.goto('/');
+  await expect(page.locator('.empty-state h2')).toHaveText('Aucune tâche en cours');
+  await expect(page.locator('.empty-state p')).toContainText('Aucune tâche sans sous-tâche');
   await expect(page.locator('.home-task')).toHaveCount(0);
 
   await context.close();

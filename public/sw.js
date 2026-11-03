@@ -18,7 +18,7 @@
 // pwa.js, app.js, htmx.min.js, an icon, the manifest, offline.html) changes.
 // See `Readme.md`, section « Installer docdoc ».
 
-const CACHE_VERSION = 'v16';
+const CACHE_VERSION = 'v19';
 const CACHE_PREFIX = 'docdoc-static-';
 const CACHE_NAME = CACHE_PREFIX + CACHE_VERSION;
 
