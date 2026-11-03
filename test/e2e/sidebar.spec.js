@@ -1,0 +1,338 @@
+'use strict';
+
+// End-to-end checks of the left sidebar on a phone (openspec change
+// collapse-sidebar-on-domain-select, tasks 1.1 to 1.3).
+//
+// The application is started as a *child process*, as in administration.spec.js:
+// this spec coexists with the other suites in the same Playwright worker, and
+// the server module reads its configuration once at require time. A child
+// process also gives the test its own in-memory store (no bucket configured), so
+// the fixtures of one spec can never leak into another.
+//
+// The child's stdout goes to a file (not a pipe): the development mailer writes
+// the one-time codes there. Two domains are adopted at enrollment, which is what
+// makes a sidebar selection possible at all.
+//
+// Run with: npm run test:e2e
+
+const fs = require('fs');
+const net = require('net');
+const os = require('os');
+const path = require('path');
+const { spawn } = require('child_process');
+const { test, expect } = require('@playwright/test');
+
+const REPO_ROOT = path.resolve(__dirname, '..', '..');
+const EMAIL = 'sidebar-e2e@example.test';
+const PHONE = { width: 390, height: 844 };
+
+let origin = '';
+let dataDir = '';
+let logFile = '';
+let storageState = '';
+let child = null;
+let logFd = null;
+
+/* ------------------------------------------------------------------ */
+/* Child server                                                        */
+/* ------------------------------------------------------------------ */
+
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.once('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const { port } = probe.address();
+      probe.close(() => resolve(port));
+    });
+  });
+}
+
+function childEnv(port) {
+  const env = {
+    ...process.env,
+    PORT: String(port),
+    NODE_ENV: 'development',
+    EMAIL_PROVIDER: 'dev',
+    AUTHORIZED_EMAILS: EMAIL,
+    RP_ID: 'localhost',
+    RP_ORIGIN: origin,
+    DOCDOC_DATA_DIR: dataDir,
+    // A developer's local `.env` must not leak into the test.
+    DOCDOC_ENV_FILE: path.join(dataDir, 'absent.env'),
+    SESSION_SECRET: 'sidebar-e2e-secret',
+  };
+  for (const key of ['S3_ENDPOINT', 'S3_BUCKET', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY']) {
+    delete env[key];
+  }
+  return env;
+}
+
+function serverLog() {
+  return fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : '';
+}
+
+async function waitForServer() {
+  for (let i = 0; i < 200; i++) {
+    if (child && child.exitCode !== null) {
+      throw new Error(`le serveur s'est arrêté (code ${child.exitCode}) :\n${serverLog()}`);
+    }
+    try {
+      await fetch(`${origin}/`, { redirect: 'manual' });
+      return;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  throw new Error(`le serveur n'a pas démarré :\n${serverLog()}`);
+}
+
+// The development mailer logs one line per code:
+//   [docdoc][dev] code pour <email> : 123456 (valable N min)
+async function waitForCode(email) {
+  const pattern = new RegExp(`code pour ${email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} : (\\d{6})`);
+  for (let i = 0; i < 200; i++) {
+    const found = pattern.exec(serverLog());
+    if (found) return found[1];
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`aucun code reçu pour ${email} :\n${serverLog()}`);
+}
+
+/* ------------------------------------------------------------------ */
+/* Enrollment (same ceremony as administration.spec.js)                */
+/* ------------------------------------------------------------------ */
+
+async function addVirtualAuthenticator(page) {
+  const client = await page.context().newCDPSession(page);
+  await client.send('WebAuthn.enable');
+  await client.send('WebAuthn.addVirtualAuthenticator', {
+    options: {
+      protocol: 'ctap2',
+      transport: 'internal',
+      hasResidentKey: true,
+      hasUserVerification: true,
+      isUserVerified: true,
+      automaticPresenceSimulation: true,
+    },
+  });
+}
+
+async function enroll(page) {
+  await page.goto('/');
+  await page.click('a[href="/auth/signup"]');
+  await page.fill('#email', EMAIL);
+  await page.click('form[action="/auth/email"] button[type="submit"]');
+  await page.waitForSelector('#code');
+  await page.fill('#code', await waitForCode(EMAIL));
+  await page.click('form[action="/auth/email/verify"] button[type="submit"]');
+  await page.waitForSelector('#register-passkey-btn');
+  await page.click('#register-passkey-btn');
+  await page.waitForURL((url) => !url.pathname.startsWith('/auth'), { timeout: 20000 });
+  await page.waitForSelector('#sidebar');
+}
+
+/* ------------------------------------------------------------------ */
+/* Fixtures: two domains, so one can be picked from the sidebar        */
+/* ------------------------------------------------------------------ */
+
+const FIRST = {
+  id: 'e2e',
+  name: 'E2E',
+  slug: 'e2e',
+  order: 0,
+  labels: [],
+  projects: [{ id: 'a', title: 'Projet A', status: 'todo', collapsed: false, children: [] }],
+  displayOrder: ['a'],
+};
+
+const SECOND = {
+  id: 'e2e2',
+  name: 'E2E 2',
+  slug: 'e2e2',
+  order: 1,
+  labels: [],
+  projects: [{ id: 'z', title: 'Projet Z', status: 'todo', collapsed: false, children: [] }],
+  displayOrder: ['z'],
+};
+
+function writeFixtures() {
+  fs.writeFileSync(path.join(dataDir, `${FIRST.id}.json`), JSON.stringify(FIRST));
+  fs.writeFileSync(path.join(dataDir, `${SECOND.id}.json`), JSON.stringify(SECOND));
+  fs.writeFileSync(path.join(dataDir, 'themes.json'), JSON.stringify([]));
+}
+
+/* ------------------------------------------------------------------ */
+/* Server lifecycle and signed-in pages                                */
+/* ------------------------------------------------------------------ */
+
+// A signed-in context at a given viewport. The phone context also enables touch
+// and mobile emulation, so the panel is exercised the way a smartphone uses it.
+async function signedInPage(browser, options = {}) {
+  const context = await browser.newContext({
+    baseURL: origin,
+    storageState,
+    ...options,
+  });
+  const page = await context.newPage();
+  return { context, page };
+}
+
+const collapsedKey = (page) => page.evaluate(() => localStorage.getItem('sidebarCollapsed'));
+
+const domainLink = (page, slug) => page.locator(`#sidebar-nav a.sidebar-link[href="/domaine/${slug}"]`);
+
+test.beforeAll(async ({ browser }) => {
+  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docdoc-sidebar-e2e-'));
+  logFile = path.join(dataDir, 'server.log');
+  storageState = path.join(dataDir, 'session.json');
+  const port = await freePort();
+  origin = `http://localhost:${port}`;
+  writeFixtures();
+
+  logFd = fs.openSync(logFile, 'a');
+  child = spawn(process.execPath, [path.join(REPO_ROOT, 'server.js')], {
+    cwd: REPO_ROOT,
+    env: childEnv(port),
+    stdio: ['ignore', logFd, logFd],
+  });
+  await waitForServer();
+
+  const context = await browser.newContext({ baseURL: origin });
+  const page = await context.newPage();
+  await addVirtualAuthenticator(page);
+  await enroll(page);
+  await context.storageState({ path: storageState });
+  await context.close();
+});
+
+test.afterAll(async () => {
+  if (child && child.exitCode === null) child.kill();
+  if (logFd !== null) fs.closeSync(logFd);
+  try {
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  } catch {
+    // A held file handle is not worth failing the run for.
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/* 1.1 The phone: picking a domain closes the panel                    */
+/* ------------------------------------------------------------------ */
+
+test('1.1 sur un smartphone, choisir un domaine referme le panneau', async ({ browser }) => {
+  const { context, page } = await signedInPage(browser, {
+    viewport: PHONE,
+    hasTouch: true,
+    isMobile: true,
+  });
+
+  await page.goto('/domaine/e2e');
+  // The premise: the panel is open, so a domain can be picked from it.
+  await expect(page.locator('#sidebar')).toHaveCSS('width', '240px');
+  await expect(domainLink(page, 'e2e2')).toBeVisible();
+
+  await domainLink(page, 'e2e2').click();
+
+  await page.waitForURL(/\/domaine\/e2e2$/);
+  await expect(page.locator('.topbar h1')).toHaveText('E2E 2');
+  // The panel is closed on the page that was just selected, without a reload.
+  await expect(page.locator('body')).toHaveClass(/sidebar-collapsed/);
+  await expect(page.locator('#sidebar')).toHaveCSS('width', '0px');
+  // The state is persisted: that is what makes a full page load arrive closed.
+  expect(await collapsedKey(page)).toBe('1');
+
+  await context.close();
+});
+
+/* ------------------------------------------------------------------ */
+/* 1.2 It survives a reload, and the toggle reopens it                 */
+/* ------------------------------------------------------------------ */
+
+test('1.2 le repli persiste après rechargement, et le bouton rouvre le panneau', async ({ browser }) => {
+  const { context, page } = await signedInPage(browser, {
+    viewport: PHONE,
+    hasTouch: true,
+    isMobile: true,
+  });
+
+  await page.goto('/domaine/e2e');
+  await domainLink(page, 'e2e2').click();
+  await page.waitForURL(/\/domaine\/e2e2$/);
+  await expect(page.locator('body')).toHaveClass(/sidebar-collapsed/);
+
+  await page.reload();
+  await expect(page.locator('.topbar h1')).toHaveText('E2E 2');
+  await expect(page.locator('body')).toHaveClass(/sidebar-collapsed/);
+  await expect(page.locator('#sidebar')).toHaveCSS('width', '0px');
+
+  // The same control that closes the panel reopens it: one state, one button.
+  await page.click('#sidebar-toggle');
+  await expect(page.locator('body')).not.toHaveClass(/sidebar-collapsed/);
+  await expect(page.locator('#sidebar')).toHaveCSS('width', '240px');
+  expect(await collapsedKey(page)).toBe('');
+
+  await context.close();
+});
+
+/* ------------------------------------------------------------------ */
+/* 1.3 A wide screen keeps the panel as it was                         */
+/* ------------------------------------------------------------------ */
+
+test('1.3 sur un écran large, choisir un domaine laisse le panneau ouvert', async ({ browser }) => {
+  const { context, page } = await signedInPage(browser, { viewport: { width: 1280, height: 720 } });
+
+  await page.goto('/domaine/e2e');
+  await expect(page.locator('#sidebar')).toHaveCSS('width', '240px');
+
+  await domainLink(page, 'e2e2').click();
+  await page.waitForURL(/\/domaine\/e2e2$/);
+  await expect(page.locator('.topbar h1')).toHaveText('E2E 2');
+
+  await expect(page.locator('body')).not.toHaveClass(/sidebar-collapsed/);
+  await expect(page.locator('#sidebar')).toHaveCSS('width', '240px');
+  expect(await collapsedKey(page)).toBe(null);
+
+  await context.close();
+});
+
+/* ------------------------------------------------------------------ */
+/* 1.4 The panel's other entries are not domain picks                  */
+/* ------------------------------------------------------------------ */
+
+test('1.4 Accueil, Administration et Aide ne referment pas le panneau sur un smartphone', async ({ browser }) => {
+  const { context, page } = await signedInPage(browser, {
+    viewport: PHONE,
+    hasTouch: true,
+    isMobile: true,
+  });
+
+  await page.goto('/domaine/e2e');
+  await expect(page.locator('#sidebar')).toHaveCSS('width', '240px');
+
+  // Each entry is reached from the short domain page: the point is the panel's
+  // state after the link, not where the entry sits in the panel.
+  // The head rubric is outside `#sidebar-nav`, so the domain-pick listener must
+  // not take it for a domain either.
+  await page.click('a.sidebar-home');
+  await page.waitForURL(/\/(\?.*)?$/);
+  await expect(page.locator('body')).not.toHaveClass(/sidebar-collapsed/);
+  await expect(page.locator('#sidebar')).toHaveCSS('width', '240px');
+  expect(await collapsedKey(page)).toBe(null);
+
+  await page.goto('/domaine/e2e');
+  await page.click('a.sidebar-admin');
+  await page.waitForURL(/\/administration$/);
+  await expect(page.locator('body')).not.toHaveClass(/sidebar-collapsed/);
+  await expect(page.locator('#sidebar')).toHaveCSS('width', '240px');
+  expect(await collapsedKey(page)).toBe(null);
+
+  await page.goto('/domaine/e2e');
+  await page.click('a.sidebar-help');
+  await page.waitForURL(/\/aide$/);
+  await expect(page.locator('body')).not.toHaveClass(/sidebar-collapsed/);
+  await expect(page.locator('#sidebar')).toHaveCSS('width', '240px');
+  expect(await collapsedKey(page)).toBe(null);
+
+  await context.close();
+});

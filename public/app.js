@@ -39,6 +39,102 @@ function swapOutlineHtml(html) {
 }
 
 /* -------------------------------------------------------------------- */
+/* Inline task links in titles.                                          */
+/* A title may contain `[label](/domaine/<slug>?reveal=<id>#node-<id>)`. */
+/* The server renders the anchors; the client uses the same grammar to    */
+/* edit the source, map the caret and paste a copied task link.           */
+/* -------------------------------------------------------------------- */
+
+// Keep this source in sync with `TASK_LINK_SOURCE` in server.js.
+const TASK_LINK_SOURCE =
+  '\\[([^\\[\\]\\n]+)\\]\\(/domaine/([a-z0-9-]+)\\?reveal=([A-Za-z0-9-]+)#node-\\3\\)';
+
+function taskLinkRegex() {
+  return new RegExp(TASK_LINK_SOURCE, 'g');
+}
+
+// Split a title source into literal text and link segments. Each segment keeps
+// its offset in the source, so the editor can map a click on the displayed text
+// back to the Markdown source.
+function titleSegments(source) {
+  const text = String(source);
+  const segments = [];
+  let last = 0;
+  const re = taskLinkRegex();
+  let match;
+  while ((match = re.exec(text)) !== null) {
+    if (match.index > last) {
+      segments.push({ type: 'text', text: text.slice(last, match.index), start: last });
+    }
+    segments.push({
+      type: 'link',
+      label: match[1],
+      href: `/domaine/${match[2]}?reveal=${match[3]}#node-${match[3]}`,
+      start: match.index,
+      end: match.index + match[0].length,
+      labelStart: match.index + 1,
+    });
+    last = match.index + match[0].length;
+  }
+  if (last < text.length) segments.push({ type: 'text', text: text.slice(last), start: last });
+  return segments;
+}
+
+// The text a title displays: link labels instead of their Markdown syntax.
+function displayTitle(source) {
+  return titleSegments(source)
+    .map((segment) => (segment.type === 'link' ? segment.label : segment.text))
+    .join('');
+}
+
+// Map an offset in the displayed title to the same position in the source.
+function sourceOffset(source, displayOffset) {
+  const segments = titleSegments(source);
+  let displayed = 0;
+  for (const segment of segments) {
+    const length = segment.type === 'link' ? segment.label.length : segment.text.length;
+    // At the right edge of a link's label, the displayed offset is ambiguous:
+    // it is both the end of the label and the position just after the link.
+    // A click on the label itself follows the link instead of opening the
+    // edit field, so an offset that reaches this edge comes from a click
+    // *after* the link: in the source it belongs after the `](url)` syntax,
+    // not inside the brackets on the name. Text segments keep the boundary
+    // (a click at the end of the text before a link lands just before `[`).
+    const inside =
+      segment.type === 'link'
+        ? displayOffset < displayed + length
+        : displayOffset <= displayed + length;
+    if (inside) {
+      const start = segment.type === 'link' ? segment.labelStart : segment.start;
+      return start + (displayOffset - displayed);
+    }
+    displayed += length;
+  }
+  return String(source).length;
+}
+
+// Paint a title source into an existing span, rebuilding text nodes and
+// anchors rather than injecting HTML. Keeps `data-title` in sync for the next
+// edit (the server does the same rendering on a full page load).
+function paintTitle(span, source) {
+  const value = String(source);
+  span.textContent = '';
+  for (const segment of titleSegments(value)) {
+    if (segment.type === 'text') {
+      span.appendChild(document.createTextNode(segment.text));
+    } else {
+      const anchor = document.createElement('a');
+      anchor.className = 'title-link';
+      anchor.href = segment.href;
+      anchor.draggable = false;
+      anchor.textContent = segment.label;
+      span.appendChild(anchor);
+    }
+  }
+  span.dataset.title = value;
+}
+
+/* -------------------------------------------------------------------- */
 /* Flat outline helpers.                                                 */
 /* The outline is rendered as a flat sequence of .line elements, each     */
 /* carrying its hierarchy depth (data-depth) and its parent's id          */
@@ -135,7 +231,15 @@ function caretOffsetAtPoint(span, x, y) {
   }
   if (!position || !position.offsetNode) return null;
   const node = position.offsetNode;
-  if (node === span) return position.offset; // offset indexes span's child nodes
+  if (node === span) {
+    // The caret sits between the span's children: convert the child index to a
+    // text offset (the span may contain anchors, not just one text node).
+    let offset = 0;
+    for (let i = 0; i < position.offset && i < span.childNodes.length; i += 1) {
+      offset += (span.childNodes[i].textContent || '').length;
+    }
+    return offset;
+  }
   if (!span.contains(node)) return null;
   let offset = position.offset;
   let prev = node.previousSibling;
@@ -148,7 +252,9 @@ function caretOffsetAtPoint(span, x, y) {
 
 function startRename(span, clientX, clientY, forceEnd, selectAll, caretAt) {
   const id = span.dataset.id;
-  const original = span.textContent;
+  // The source may contain link syntax even though the span only displays the
+  // labels, so the editor always starts from `data-title` when available.
+  const original = span.dataset.title || span.textContent;
   let done = false;
   // Caret offset to restore after a keyboard reindent reopened this field.
   let reindentCaret = original.length;
@@ -161,7 +267,9 @@ function startRename(span, clientX, clientY, forceEnd, selectAll, caretAt) {
   let caret = original.length;
   if (!forceEnd) {
     const hit = caretOffsetAtPoint(span, clientX, clientY);
-    if (hit !== null) caret = Math.max(0, Math.min(hit, original.length));
+    // `hit` is an offset in the displayed title; the field edits the source, so
+    // a click after a link lands past the link's `](...)` syntax.
+    if (hit !== null) caret = sourceOffset(original, hit);
   }
   // An explicit offset (the reindent path) wins: the title may have been
   // retyped since the click that opened the field.
@@ -182,10 +290,11 @@ function startRename(span, clientX, clientY, forceEnd, selectAll, caretAt) {
     else input.setSelectionRange(caret, caret);
   });
 
-  // Keep the field as wide as the text (plus slack for the caret), so the
-  // edit mode stays discreet and matches the current title width.
+  // Keep the field as wide as the displayed title (plus slack for the caret),
+  // not as wide as the Markdown source: a pasted link's URL would otherwise
+  // blow the field up to the whole width of the page.
   const sizeInput = () => {
-    input.style.width = Math.max(2, input.value.length + 1) + 'ch';
+    input.style.width = Math.max(2, displayTitle(input.value).length + 1) + 'ch';
   };
   sizeInput();
   input.addEventListener('input', sizeInput);
@@ -198,7 +307,9 @@ function startRename(span, clientX, clientY, forceEnd, selectAll, caretAt) {
     const replacement = document.createElement('span');
     replacement.className = span.className;
     replacement.dataset.id = id;
-    replacement.textContent = value || original;
+    // Paint the source, not `textContent`: a blur without changes must not
+    // leave the Markdown syntax visible in place of the link.
+    paintTitle(replacement, value || original);
 
     input.replaceWith(replacement);
 
@@ -300,16 +411,52 @@ function startRename(span, clientX, clientY, forceEnd, selectAll, caretAt) {
 // click it targets when the browser sends none.
 let suppressClickUntil = 0;
 
+// The collapse gesture is a double click on the selection button. It is
+// detected from two `click` events rather than from the native `dblclick`
+// event: the first click swaps the dot for the grip (and hides the collapsed
+// ring), so the second click may land on a different glyph — and some
+// environments then dispatch no `dblclick` at all, while touch double-taps
+// rarely synthesize one. Two clicks on the same bullet, close in time and
+// place, are exactly the user's double click.
+const DOUBLE_CLICK_MS = 500;
+const DOUBLE_CLICK_SLOP = 8;
+let lastBulletClick = null; // { id, at, x, y }
+
+function toggleLineCollapse(line) {
+  if (!window.htmx) return;
+  htmx.ajax('POST', domainPath('/api/nodes/' + line.dataset.id + '/toggle'), {
+    target: '#outline',
+    swap: 'outerHTML',
+  });
+}
+
 document.addEventListener('click', (e) => {
   const bullet = e.target.closest('.bullet');
   if (bullet && suppressClickUntil > performance.now()) {
     suppressClickUntil = 0;
+    lastBulletClick = null;
     e.preventDefault();
     return;
   }
   if (bullet) {
     const line = bullet.closest('.line');
     if (line) {
+      // A second click on the same bullet is the collapse/expand gesture; it
+      // must not also move the selection to the next stage.
+      const now = performance.now();
+      const previous = lastBulletClick;
+      lastBulletClick = { id: line.dataset.id, at: now, x: e.clientX, y: e.clientY };
+      if (
+        previous &&
+        previous.id === line.dataset.id &&
+        now - previous.at <= DOUBLE_CLICK_MS &&
+        Math.hypot(e.clientX - previous.x, e.clientY - previous.y) <= DOUBLE_CLICK_SLOP
+      ) {
+        lastBulletClick = null;
+        toggleLineCollapse(line);
+        return;
+      }
+
       // Single active selection, toggling between two states on the head line:
       //  1. first click selects the head line and its whole subtree;
       //  2. a second click on the head line narrows the selection to the head
@@ -348,6 +495,14 @@ document.addEventListener('click', (e) => {
     }
     return;
   }
+
+  // A click elsewhere breaks any pending double click on a bullet.
+  lastBulletClick = null;
+
+  // A link inside the title owns the click: the browser follows it, and the
+  // rename field must not open. Renaming stays available on the text outside
+  // the link, on the line's free space, or from the context menu.
+  if (e.target.closest('.title a')) return;
 
   const title = e.target.closest('.title');
   if (title && !title.dataset.editing) {
@@ -458,30 +613,6 @@ document.addEventListener('mouseout', (e) => {
     l.classList.remove('selected');
     l.classList.remove('selected-head');
   });
-});
-
-// Double-click the selection button (bullet) to collapse/expand a line.
-// The title, rename input, and context menu are ignored so renaming and the
-// menu are unaffected.
-document.addEventListener('dblclick', (e) => {
-  if (e.target.closest('.title')) return;
-  if (e.target.closest('.title-input')) return;
-  if (e.target.closest('input')) return;
-  if (e.target.closest('.menu')) return;
-
-  // Only the selection button acts as the collapse/expand trigger.
-  const bullet = e.target.closest('.bullet');
-  if (!bullet) return;
-
-  const line = bullet.closest('.line');
-  if (!line || !line.dataset.id) return;
-
-  if (window.htmx) {
-    htmx.ajax('POST', domainPath('/api/nodes/' + line.dataset.id + '/toggle'), {
-      target: '#outline',
-      swap: 'outerHTML',
-    });
-  }
 });
 
 /* -------------------------------------------------------------------- */
@@ -828,10 +959,21 @@ document.addEventListener('pointercancel', (e) => {
 });
 
 /* -------------------------------------------------------------------- */
-/* Sidebar: toggle collapse + create-domain form.                       */
+/* Sidebar: toggle collapse + close after a domain pick on a phone.      */
 /* The collapsed state is persisted in localStorage so it survives       */
 /* navigation (each page is a full load and re-applies the state).       */
 /* -------------------------------------------------------------------- */
+
+// The window width under which the app treats the screen as a phone, i.e. the
+// same 640px breakpoint as the outline's narrow-screen rules.
+const SIDEBAR_NARROW = '(max-width: 640px)';
+
+// One state, one key: the toggle and the automatic close after a domain pick
+// both go through here, so the panel can never hold two different states.
+function setSidebarCollapsed(collapsed) {
+  document.body.classList.toggle('sidebar-collapsed', collapsed);
+  localStorage.setItem('sidebarCollapsed', collapsed ? '1' : '');
+}
 
 function applySidebarState() {
   if (localStorage.getItem('sidebarCollapsed') === '1') {
@@ -842,10 +984,310 @@ function applySidebarState() {
 const sidebarToggle = document.getElementById('sidebar-toggle');
 if (sidebarToggle) {
   sidebarToggle.addEventListener('click', () => {
-    const collapsed = document.body.classList.toggle('sidebar-collapsed');
-    localStorage.setItem('sidebarCollapsed', collapsed ? '1' : '');
+    setSidebarCollapsed(!document.body.classList.contains('sidebar-collapsed'));
   });
 }
+
+// Picking a domain from the panel closes it on a phone, so the outline of the
+// chosen domain gets the whole width. The navigation below is a full page load:
+// the state is persisted, and the destination page renders already collapsed.
+// A modified click (new tab, new window) leaves the current page's panel alone,
+// and the panel's footer entries (Administration, Aide) are not domain picks.
+document.addEventListener('click', (e) => {
+  if (e.defaultPrevented || e.button !== 0) return;
+  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  const link = e.target.closest && e.target.closest('.sidebar-nav a.sidebar-link');
+  if (!link) return;
+  if (!window.matchMedia(SIDEBAR_NARROW).matches) return;
+  setSidebarCollapsed(true);
+});
+
+/* -------------------------------------------------------------------- */
+/* Sticky ancestry: the domain name and the chain of parent tasks of the */
+/* first visible line stay pinned while the outline scrolls, so a deep   */
+/* sub-task never loses its context. The chain is read from the rendered */
+/* DOM (`data-parent` and `.title`), so it never costs a request.        */
+/* -------------------------------------------------------------------- */
+
+(function initStickyAncestry() {
+  const bar = document.getElementById('ancestry');
+  const topbar = document.getElementById('topbar');
+  if (!bar || !topbar) return;
+
+  let outlineEl = null;
+  let lines = [];
+  let byId = new Map();
+  // Ids of the displayed tasks that have a displayed child. A task in this set
+  // is a mother the lines below depend on, so its own label must stay readable
+  // while its row crosses the bar (see `update`).
+  let mothers = new Set();
+  let signature = null;
+  let reserve = 0;
+  let reserveDepth = -1;
+  let reserveWidth = -1;
+
+  // The outline is replaced by htmx after most actions: the element identity is
+  // the cheapest reliable signal that the cached lines are stale.
+  function refreshIndex() {
+    const outline = document.getElementById('outline');
+    if (outline === outlineEl) return;
+    outlineEl = outline;
+    lines = outline ? Array.from(outline.querySelectorAll('.line')) : [];
+    byId = new Map(lines.map((el) => [el.dataset.id, el]));
+    mothers = new Set(lines.map((el) => el.dataset.parent).filter(Boolean));
+    signature = null;
+    reserveDepth = -1;
+  }
+
+  // Height of the tallest chain the outline can display, measured once per
+  // outline and per width. The page reserves it at the bottom (see
+  // `body.has-labels-bar main`), so growing or shrinking the header never
+  // changes the document's total height — otherwise the scroll would be clamped
+  // at the end of the page and the chain would oscillate.
+  function refreshReserve() {
+    const maxDepth = lines.reduce(
+      (max, el) => Math.max(max, Number(el.dataset.depth) || 0),
+      0
+    );
+    const width = topbar.clientWidth;
+    if (maxDepth === reserveDepth && width === reserveWidth) return;
+    reserveDepth = maxDepth;
+    reserveWidth = width;
+    if (!maxDepth) {
+      reserve = 0;
+      return;
+    }
+    const probe = document.createElement('div');
+    probe.className = 'ancestry';
+    probe.setAttribute('aria-hidden', 'true');
+    probe.style.position = 'absolute';
+    probe.style.visibility = 'hidden';
+    probe.style.maxHeight = 'none';
+    probe.style.width = width + 'px';
+    for (let depth = 0; depth < maxDepth; depth++) {
+      const item = document.createElement('a');
+      item.className = 'ancestry-item';
+      item.style.setProperty('--pin-fraction', '1');
+      const row = document.createElement('span');
+      row.className = 'ancestry-row';
+      row.style.setProperty('--depth', String(depth));
+      row.textContent = 'X';
+      item.append(row);
+      probe.append(item);
+    }
+    topbar.append(probe);
+    // The live panel is capped at 40vh; a deeper chain scrolls inside it.
+    reserve = Math.min(probe.getBoundingClientRect().height, window.innerHeight * 0.4);
+    probe.remove();
+  }
+
+  function labelOf(lineEl) {
+    const title = lineEl.querySelector('.title');
+    return title ? title.textContent.trim() : '';
+  }
+
+  // The ancestors of `lineEl`, from the top-level project down to its immediate
+  // parent. A visible line's ancestors are always in the DOM: a collapsed
+  // ancestor would have hidden it.
+  function ancestryOf(lineEl) {
+    const chain = [];
+    const seen = new Set();
+    let id = lineEl.dataset.parent;
+    while (id && !seen.has(id)) {
+      seen.add(id);
+      const parent = byId.get(id);
+      if (!parent) break;
+      chain.unshift(parent);
+      id = parent.dataset.parent;
+    }
+    return chain;
+  }
+
+  // The first line whose bottom edge is below the bar: the line being read.
+  // Lines are in display order, so their vertical positions are increasing and
+  // a binary search finds it in logarithmic time even in a huge outline.
+  function firstVisibleLine(barBottom) {
+    let low = 0;
+    let high = lines.length - 1;
+    let found = null;
+    while (low <= high) {
+      const middle = (low + high) >> 1;
+      const rect = lines[middle].getBoundingClientRect();
+      if (rect.bottom > barBottom) {
+        found = lines[middle];
+        high = middle - 1;
+      } else {
+        low = middle + 1;
+      }
+    }
+    return found;
+  }
+
+  // The chain of tasks shown under the domain name, and the hidden part of its
+  // last row. It is the ancestry of the line being read plus, when that line is
+  // a mother whose title is straddling the bar, the line itself: its children
+  // are still displayed below it, so its label is the context of what follows.
+  // The fraction is the hidden part of the reading line's title (0 when it is
+  // fully visible, 1 when it is fully behind the bar); the last crumb shows that
+  // hidden fragment at the bar's bottom, while the line below shows the rest, so
+  // the label is split by the separator instead of being duplicated or missing.
+  function chainOf(first, barBottom) {
+    if (!first) return { chain: [], fraction: 1 };
+    const chain = ancestryOf(first);
+    let fraction = 1;
+    if (mothers.has(first.dataset.id)) {
+      const title = first.querySelector('.title');
+      const rect = title ? title.getBoundingClientRect() : first.getBoundingClientRect();
+      const hidden = (barBottom - rect.top) / Math.max(rect.height, 1);
+      // A tiny slack keeps the first line of a page (its title exactly on the
+      // header's bottom edge) from being treated as hidden.
+      if (hidden > 0.001) {
+        chain.push(first);
+        fraction = Math.min(1, hidden);
+      }
+    }
+    return { chain, fraction };
+  }
+
+  // One pinned row per task, reused across updates so a crumb that stays in the
+  // chain is never detached and re-created (which would blink on every scroll).
+  let crumbById = new Map();
+
+  function crumbFor(lineEl, label) {
+    const id = lineEl.dataset.id;
+    let item = crumbById.get(id);
+    if (!item) {
+      item = document.createElement('a');
+      item.className = 'ancestry-item';
+      const row = document.createElement('span');
+      row.className = 'ancestry-row';
+      const bullet = document.createElement('span');
+      bullet.className = 'ancestry-bullet';
+      bullet.setAttribute('aria-hidden', 'true');
+      const text = document.createElement('span');
+      text.className = 'ancestry-label';
+      row.append(bullet, text);
+      item.append(row);
+      item._row = row;
+      item._label = text;
+      crumbById.set(id, item);
+    }
+    item.href = '#node-' + id;
+    item.title = label;
+    item._label.textContent = label;
+    // The pinned row uses the line's own depth, so its bullet slot and title
+    // start exactly where the visible sub-tasks' bullet and title start.
+    item._row.style.setProperty('--depth', String(Number(lineEl.dataset.depth) || 0));
+    return item;
+  }
+
+  function renderChain(chain, fraction) {
+    // The labels take part in the signature: renaming an ancestor re-renders
+    // the outline without changing the chain's ids, and the crumb must follow.
+    const labels = chain.map(labelOf);
+    const key = chain.map((el, index) => el.dataset.id + ':' + labels[index]).join('/');
+    let changed = false;
+    if (key !== signature) {
+      changed = true;
+      signature = key;
+      const keep = new Set(chain.map((el) => el.dataset.id));
+      for (const [id, item] of crumbById) {
+        if (keep.has(id)) continue;
+        item.remove();
+        crumbById.delete(id);
+      }
+      chain.forEach((lineEl, index) => bar.append(crumbFor(lineEl, labels[index])));
+    }
+    // The last crumb is the one straddling the bar: its content is clipped to
+    // the hidden part of the reading line's title, so the separator and the
+    // list behind it glide instead of jumping, and the label is handed over
+    // instead of being duplicated or dropped.
+    chain.forEach((lineEl, index) => {
+      const item = crumbById.get(lineEl.dataset.id);
+      if (!item) return;
+      const fragment = index === chain.length - 1 ? fraction : 1;
+      item.style.setProperty('--pin-fraction', String(fragment));
+      item.classList.toggle('is-partial', fragment < 0.999);
+    });
+    return changed;
+  }
+
+  // Animate the bar from its current height to the height its new content
+  // needs, so the list glides by one line instead of jumping. The previous
+  // height is captured before the crumb is added or removed.
+  let heightReady = false;
+  let lastInnerHeight = 0;
+  function sizeBar(previous) {
+    bar.style.height = 'auto';
+    const target = bar.offsetHeight;
+    if (!heightReady) {
+      heightReady = true;
+      bar.style.height = target + 'px';
+      return target;
+    }
+    if (Math.abs(target - previous) < 0.5) {
+      bar.style.height = target + 'px';
+      return target;
+    }
+    bar.style.height = previous + 'px';
+    // Flush the starting height so the transition has a value to animate from.
+    void bar.offsetHeight;
+    bar.style.height = target + 'px';
+    return target;
+  }
+
+  let pending = false;
+  // Final height of the bar after the current transition. The header height is
+  // published from this target, not from the animating value, so an anchor
+  // clicked while the bar moves still lands below the final bar.
+  let barTarget = 0;
+  function update() {
+    pending = false;
+    refreshIndex();
+    refreshReserve();
+    const rect = topbar.getBoundingClientRect();
+    topbar.classList.toggle('is-stuck', rect.top <= 0);
+    const first = firstVisibleLine(rect.bottom);
+    const { chain, fraction } = chainOf(first, rect.bottom);
+    const previousBarHeight = bar.offsetHeight;
+    const chainChanged = renderChain(chain, fraction);
+    if (chainChanged || window.innerHeight !== lastInnerHeight) {
+      lastInnerHeight = window.innerHeight;
+      barTarget = sizeBar(previousBarHeight);
+      // The bottom reserve follows the same transition, so the document height
+      // stays constant while the list glides.
+      document.documentElement.style.setProperty('--chain-height', barTarget + 'px');
+    }
+    // The topbar's height minus the bar's current (possibly animating) height
+    // is constant; adding the target gives the height the header will settle at.
+    const headerHeight = topbar.offsetHeight - bar.offsetHeight + barTarget;
+    // Published for `.line { scroll-margin-top }`: an anchored line must stop
+    // below the whole stack, not under it.
+    document.documentElement.style.setProperty('--topbar-height', headerHeight + 'px');
+    // The bottom reserve keeps the document height constant while the chain
+    // grows or shrinks (see `refreshReserve`).
+    document.documentElement.style.setProperty('--chain-reserve', reserve + 'px');
+  }
+
+  function schedule() {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(update);
+  }
+
+  window.addEventListener('scroll', schedule, { passive: true });
+  window.addEventListener('resize', schedule);
+  // Collapsing the sidebar widens the column, so wrapped titles move the rows:
+  // recompute once the new layout is in place.
+  const sidebarToggleBtn = document.getElementById('sidebar-toggle');
+  if (sidebarToggleBtn) sidebarToggleBtn.addEventListener('click', schedule);
+  if (window.htmx) {
+    // An action re-renders the outline in place, and no scroll event follows.
+    document.body.addEventListener('htmx:afterSwap', schedule);
+    document.body.addEventListener('htmx:afterSettle', schedule);
+  }
+  schedule();
+})();
 
 /* -------------------------------------------------------------------- */
 /* Deep-link a line: copy its link and keep a reveal target active.      */
@@ -907,6 +1349,53 @@ document.addEventListener('click', (e) => {
     .catch(() => toast('Copie impossible'));
 });
 
+// Rename from the context menu. This is the only way to reach the edit field
+// when a whole title is an inline task link (no text or free space left to
+// click), so it matters on every viewport, touch included.
+document.addEventListener('click', (e) => {
+  const renameBtn = e.target.closest('.menu-item.rename');
+  if (!renameBtn) return;
+  const line = renameBtn.closest('.line');
+  const titleEl = line && line.querySelector('.title');
+  if (titleEl && !titleEl.dataset.editing) startRename(titleEl, 0, 0, true);
+});
+
+// Add a sub-task from the context menu. This action is not driven by htmx: the
+// client needs the new node's id (X-New-Node-Id) to open its title in edit mode
+// with the default text selected, so naming it needs no extra click.
+document.addEventListener('click', (e) => {
+  const addBtn = e.target.closest('.menu-item.add-child');
+  if (!addBtn) return;
+  const line = addBtn.closest('.line');
+  if (!line || !line.dataset.id) return;
+  addChildLine(line.dataset.id);
+});
+
+async function addChildLine(parentId) {
+  // Keep an active deep-link reveal across the re-render, as htmx requests do.
+  const reveal = new URLSearchParams(location.search).get('reveal');
+  const url = domainPath('/api/nodes') + (reveal ? '?reveal=' + encodeURIComponent(reveal) : '');
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ parentId }),
+    });
+    if (!res.ok) throw new Error('Création de tâche refusée (' + res.status + ')');
+    const newId = res.headers.get('X-New-Node-Id');
+    const html = await res.text();
+    if (!swapOutlineHtml(html)) return;
+    if (!newId) return;
+    const newLine = document.querySelector('.line[data-id="' + newId + '"]');
+    const newTitle = newLine && newLine.querySelector('.title');
+    // The whole default title is selected, so typing replaces "Nouvelle tâche".
+    if (newTitle) startRename(newTitle, 0, 0, true, true);
+  } catch (err) {
+    console.error('Erreur création tâche:', err);
+    reloadOutline();
+  }
+}
+
 // While a reveal target is present in the URL, re-send it on every outbound
 // htmx request for the active domain, so re-rendered outlines keep the target's
 // ancestors expanded. Navigating to another domain (a full page load) drops it.
@@ -918,6 +1407,87 @@ if (window.htmx && revealId) {
     e.detail.parameters.reveal = revealId;
   });
 }
+
+/* -------------------------------------------------------------------- */
+/* Paste a copied task link into a title.                                */
+/* The pasted URL is replaced by `[target title](deep link)`, so the line */
+/* shows a named hyperlink instead of a raw address. Any other paste      */
+/* keeps the browser's native behaviour.                                 */
+/* -------------------------------------------------------------------- */
+
+// A copied task link is an internal deep link whose `reveal` parameter and
+// fragment carry the same node id. Anything else is not a task link.
+function parseTaskLink(raw) {
+  const text = String(raw).trim();
+  if (!text) return null;
+  let url;
+  try {
+    url = new URL(text, location.origin);
+  } catch (err) {
+    return null;
+  }
+  if (url.origin !== location.origin) return null;
+  const path = /^\/domaine\/([a-z0-9-]+)$/.exec(url.pathname);
+  const fragment = /^#node-([A-Za-z0-9-]+)$/.exec(url.hash);
+  const reveal = url.searchParams.get('reveal');
+  if (!path || !fragment || !reveal || reveal !== fragment[1]) return null;
+  return {
+    slug: path[1],
+    id: reveal,
+    href: `/domaine/${path[1]}?reveal=${reveal}#node-${reveal}`,
+  };
+}
+
+// The label of a node already rendered in the current outline, if any. A line
+// hidden under a collapsed ancestor (or a target in another domain) is absent
+// from the DOM: null, and the caller falls back to the API.
+function taskLabelFromDom(slug, id) {
+  if (slug !== activeSlug) return null;
+  const line = document.querySelector(`#outline .line[data-id="${id}"]`);
+  const titleEl = line && line.querySelector('.title');
+  if (!titleEl) return null;
+  const label = displayTitle(titleEl.dataset.title || titleEl.textContent).trim();
+  return label || null;
+}
+
+async function resolveTaskLabel(slug, id) {
+  const fromDom = taskLabelFromDom(slug, id);
+  if (fromDom) return fromDom;
+  try {
+    const res = await fetch(`/domaine/${slug}/api/nodes/${id}`, {
+      headers: { Accept: 'application/json' },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const label = displayTitle(data && data.title ? data.title : '').trim();
+    return label || null;
+  } catch (err) {
+    return null;
+  }
+}
+
+document.addEventListener('paste', (e) => {
+  const input = e.target.closest && e.target.closest('.title-input');
+  if (!input || !e.clipboardData) return;
+  const raw = e.clipboardData.getData('text/plain');
+  const link = parseTaskLink(raw);
+  if (!link) return;
+
+  // The label may need a request, so the native paste is cancelled now; the
+  // text is inserted once the target title is known, or as a safe fallback.
+  e.preventDefault();
+  const start = input.selectionStart === null ? input.value.length : input.selectionStart;
+  const end = input.selectionEnd === null ? start : input.selectionEnd;
+
+  resolveTaskLabel(link.slug, link.id).then((label) => {
+    if (!input.isConnected) return;
+    const usable = label && !/[\[\]\r\n]/.test(label);
+    const snippet = usable ? `[${label}](${link.href})` : String(raw).trim();
+    input.setRangeText(snippet, start, end, 'end');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.focus();
+  });
+});
 
 /* -------------------------------------------------------------------- */
 /* Themes: the labels bar of a domain page.                              */

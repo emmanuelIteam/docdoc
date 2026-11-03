@@ -19,6 +19,8 @@
     "nodemailer": "^10.0.16"
   },
   "devDependencies": {
-    "@playwright/test": "^1.64.0"
+    "@playwright/test": "^1.64.0",
+    "esbuild": "0.28.2",
+    "lightningcss": "1.33.0"
   }
 }

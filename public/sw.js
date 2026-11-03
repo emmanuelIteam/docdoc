@@ -9,12 +9,16 @@
 // outline, and a shared device must not be able to read another account's data
 // from Cache Storage.
 //
-// CACHE_VERSION must be incremented whenever a precached file (style.css,
-// pwa.js, app.js, htmx.min.js, an icon, the manifest, offline.html) changes:
-// the cache name is what makes a deployment's new assets visible. See
-// `Readme.md`, section « Installer docdoc ».
+// CACHE_VERSION names the cache: the cache name is what makes a deployment's
+// new assets visible. A release build (scripts/build-assets.js, called from the
+// Dockerfile) replaces the value below with the git tag that triggered it, so
+// every published version starts on a fresh cache without a manual edit. When
+// running from the working tree (pnpm start, docker compose up), the value
+// below is used as-is: increment it whenever a precached file (style.css,
+// pwa.js, app.js, htmx.min.js, an icon, the manifest, offline.html) changes.
+// See `Readme.md`, section « Installer docdoc ».
 
-const CACHE_VERSION = 'v1';
+const CACHE_VERSION = 'v12';
 const CACHE_PREFIX = 'docdoc-static-';
 const CACHE_NAME = CACHE_PREFIX + CACHE_VERSION;
 

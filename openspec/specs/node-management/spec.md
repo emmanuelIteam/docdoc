@@ -5,7 +5,7 @@ TBD - created by archiving change add-projects-outliner. Update Purpose after ar
 ## Requirements
 ### Requirement: Create a node
 
-The system SHALL allow the user to create a new project as a level-1 line by adding a sibling to an existing level-1 line, and a new task or subtask as a child of an existing line, and SHALL reveal the newly created line immediately. A domain SHALL already hold a default project when it is created (see "Keep at least one project line").
+The system SHALL allow the user to create a new project as a level-1 line by adding a sibling to an existing level-1 line, and a new task or subtask as a child of an existing line, and SHALL reveal the newly created line immediately. When a child is created from the line's context menu, the system SHALL open the new line in edit mode with its default title `Nouvelle tâche` selected, so that typing replaces it. A domain SHALL already hold a default project when it is created (see "Keep at least one project line").
 
 #### Scenario: Create a new project
 
@@ -27,16 +27,34 @@ The system SHALL allow the user to create a new project as a level-1 line by add
 - **WHEN** a child node is created under an expanded line
 - **THEN** the new child line is displayed immediately
 
+#### Scenario: Creating a child from the context menu opens its title for naming
+
+- **WHEN** a line is selected, its context menu is open, and the user clicks the "+" action
+- **THEN** a child line titled `Nouvelle tâche` is created, opened in edit mode with the whole title selected, so typing replaces the default title
+
+#### Scenario: Creating a child under a collapsed line reveals it
+
+- **WHEN** the user clicks the "+" action on a collapsed line
+- **THEN** that line is expanded and the new child line is displayed immediately
+
 ### Requirement: Rename a node
-The system SHALL allow the user to edit the title of an existing node.
+The system SHALL allow the user to edit the title of an existing node. A click on an inline task link inside the title SHALL follow the link and SHALL NOT open the rename field; renaming SHALL remain available by clicking the title outside the link, by clicking the line's free space, or from the line's context menu.
 
 #### Scenario: Edit a node title
 - **WHEN** the user edits the title of a node
 - **THEN** the node title is updated and displayed with the new text
 
 #### Scenario: Caret opens at the click position
-- **WHEN** the user clicks a line's title to rename it
+- **WHEN** the user clicks a line's title outside an inline task link to rename it
 - **THEN** the edit field opens with the caret at the position of the click within the title, and the title is not selected
+
+#### Scenario: Clicking a task link follows it
+- **WHEN** the user clicks an inline task link inside a title
+- **THEN** the browser follows the link and no rename field is opened
+
+#### Scenario: A link-only title can still be renamed
+- **WHEN** the user clicks the free space of a line whose whole title is an inline task link
+- **THEN** the rename field opens on the source title so the label or the link can be edited
 
 ### Requirement: Reindent a node
 The system SHALL allow the user to move a node up or down one level in the hierarchy, through the line's indent/outdent context-menu actions as well as through the keyboard shortcuts `Tab` (indent) and `Shift+Tab` (outdent) applied to the current line. Reindenting SHALL NOT reorder the outline: outdenting a node SHALL change its depth only and SHALL leave the node displayed at the position it already occupied — it SHALL NOT be displayed above the lines it followed; indenting a node SHALL make it the last child of its previous sibling and display it at the end of that sibling's block, never above that sibling.

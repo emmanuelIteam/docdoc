@@ -807,6 +807,42 @@ function escapeHtml(str) {
     .replace(/'/g, '&#39;');
 }
 
+// Inline task links inside a title: `[label](/domaine/<slug>?reveal=<id>#node-<id>)`.
+// Only internal deep links are recognized, and `reveal` must carry the same id
+// as the fragment. Keep this source in sync with `TASK_LINK_SOURCE` in
+// public/app.js: the client uses the same grammar to edit and paste titles.
+const TASK_LINK_SOURCE =
+  '\\[([^\\[\\]\\n]+)\\]\\(/domaine/([a-z0-9-]+)\\?reveal=([A-Za-z0-9-]+)#node-\\3\\)';
+
+function taskLinkRegex() {
+  return new RegExp(TASK_LINK_SOURCE, 'g');
+}
+
+// Render a title as escaped text plus one anchor per valid inline task link.
+// The title itself remains the source string; only its rendering is enriched.
+function renderTitleHtml(title) {
+  const text = String(title);
+  let html = '';
+  let last = 0;
+  const re = taskLinkRegex();
+  let match;
+  while ((match = re.exec(text)) !== null) {
+    html += escapeHtml(text.slice(last, match.index));
+    const href = `/domaine/${match[2]}?reveal=${match[3]}#node-${match[3]}`;
+    html += `<a class="title-link" href="${escapeHtml(href)}" draggable="false">${escapeHtml(match[1])}</a>`;
+    last = match.index + match[0].length;
+  }
+  return html + escapeHtml(text.slice(last));
+}
+
+// The visible text of a title: each valid inline task link is replaced by its
+// label, keeping the text around it. Used where the title must stay plain text,
+// e.g. inside the single anchor of a homepage entry, where an inner anchor
+// would be invalid HTML and an ambiguous click target.
+function titleLabel(title) {
+  return String(title).replace(taskLinkRegex(), '$1');
+}
+
 // The reveal target is a node id that must be made visible even if one of its
 // ancestors is persisted as collapsed. Walking up the tree, collect the ids of
 // every ancestor of `id` (the path from the root down to `id`'s parent).
@@ -839,7 +875,7 @@ function expandIdsFor(domain, req) {
 // `renderOutline`), so a line carries its own depth and the indentation is
 // purely visual: the wrapper `<li class="node">` and the nested
 // `<ul class="children">` of the previous rendering are gone.
-function renderLine(entry, slug) {
+function renderLine(entry, slug, collapsed) {
   const node = entry.node;
   const statusCls =
     node.status === 'in_progress' ? 'status-in-progress' : node.status === 'done' ? 'status-done' : '';
@@ -857,31 +893,58 @@ function renderLine(entry, slug) {
   const statusBtn = (st) =>
     `<button type="button" class="menu-item${node.status === st ? ' active' : ''}" hx-post="/domaine/${slug}/api/nodes/${node.id}/status" hx-vals='${scopeExpr(st)}' hx-target="#outline" hx-swap="outerHTML" title="${STATUS_LABELS[st]}">${STATUS_ICONS[st]}</button>`;
 
+  // The add-child action (+) is handled client-side (like copy-link and
+  // rename), but it needs a server round-trip: the client reads the new node's
+  // id from the X-New-Node-Id response header to open its title in edit mode.
   const menu =
     '<div class="menu">' +
     statusBtn('todo') +
     statusBtn('in_progress') +
     statusBtn('done') +
     `<button type="button" class="menu-item copy-link" title="Copier le lien">🔗</button>` +
+    `<button type="button" class="menu-item rename" title="Renommer">✎</button>` +
     `<button type="button" class="menu-item" hx-post="/domaine/${slug}/api/nodes/${node.id}/indent" hx-target="#outline" hx-swap="outerHTML" title="Indenter">→</button>` +
     `<button type="button" class="menu-item" hx-post="/domaine/${slug}/api/nodes/${node.id}/outdent" hx-target="#outline" hx-swap="outerHTML" title="Désindenter">←</button>` +
-    `<button type="button" class="menu-item" hx-post="/domaine/${slug}/api/nodes" hx-vals='{"parentId":"${node.id}"}' hx-target="#outline" hx-swap="outerHTML" title="Ajouter une tâche">+</button>` +
+    `<button type="button" class="menu-item add-child" title="Ajouter une tâche">+</button>` +
     `<button type="button" class="menu-item danger" hx-delete="/domaine/${slug}/api/nodes/${node.id}" hx-target="#outline" hx-swap="outerHTML" title="Supprimer">🗑</button>` +
     '</div>';
 
+  // A collapsed line hides its sub-lines, so its bullet becomes the only clue
+  // that the line is composed of sub-tasks: it stays visible without hover and
+  // carries a ring (`.bullet-subtasks`), drawn by CSS over the existing slot.
+  const ariaLabel = collapsed
+    ? 'Sélectionner la ligne — repliée, contient des sous-tâches masquées'
+    : 'Sélectionner la ligne';
+  const subtasksMark = collapsed
+    ? '<span class="bullet-subtasks" aria-hidden="true"></span>'
+    : '';
+
   return (
-    `<li class="line" id="node-${node.id}" data-id="${node.id}" data-parent="${entry.parent ? entry.parent.id : ''}" data-depth="${entry.depth}" style="--depth:${entry.depth}">` +
+    `<li class="line${collapsed ? ' collapsed' : ''}" id="node-${node.id}" data-id="${node.id}" data-parent="${entry.parent ? entry.parent.id : ''}" data-depth="${entry.depth}" style="--depth:${entry.depth}">` +
     // One button, two glyphs: the dot is the selection control, the grip tells
     // the user the selected head line can be grabbed to move it. CSS switches
     // them on `.line.selected-head`, so no client code keeps them in sync and
     // the title never shifts (both share the same slot).
-    '<button class="bullet" type="button" title="Sélectionner — glisser pour déplacer" aria-label="Sélectionner la ligne" draggable="true">' +
+    `<button class="bullet" type="button" title="Sélectionner — glisser pour déplacer" aria-label="${ariaLabel}" draggable="true">` +
     '<span class="bullet-dot" aria-hidden="true">●</span>' +
     '<span class="bullet-grip" aria-hidden="true">⠿</span>' +
+    subtasksMark +
     '</button>' +
-    `<span class="title ${statusCls}" data-id="${node.id}">${escapeHtml(node.title)}</span>` +
+    `<span class="title ${statusCls}" data-id="${node.id}" data-title="${escapeHtml(node.title)}">${renderTitleHtml(node.title)}</span>` +
     menu +
     '</li>'
+  );
+}
+
+// A line is displayed collapsed when it has children and its persisted
+// `collapsed` flag is set — unless `?reveal` force-expanded one of its
+// descendants, in which case the line is shown expanded and must not be
+// presented as collapsed.
+function isDisplayedCollapsed(node, expandIds) {
+  return (
+    node.children.length > 0 &&
+    Boolean(node.collapsed) &&
+    !(expandIds && expandIds.has(node.id))
   );
 }
 
@@ -894,7 +957,7 @@ function hiddenNodeIds(projects, expandIds) {
   function walk(nodes, ancestorCollapsed) {
     for (const node of nodes) {
       const hasKids = node.children.length > 0;
-      const collapsed = hasKids && node.collapsed && !(expandIds && expandIds.has(node.id));
+      const collapsed = isDisplayedCollapsed(node, expandIds);
       if (ancestorCollapsed) hidden.add(node.id);
       if (hasKids) walk(node.children, ancestorCollapsed || collapsed);
     }
@@ -917,7 +980,7 @@ function renderOutline(domain, slug, expandIds) {
   for (const id of order) {
     const entry = index.get(id);
     if (!entry || hidden.has(id)) continue;
-    lines.push(renderLine(entry, slug));
+    lines.push(renderLine(entry, slug, isDisplayedCollapsed(entry.node, expandIds)));
   }
   return `<ul id="outline" class="outline">${lines.join('')}</ul>`;
 }
@@ -966,14 +1029,20 @@ function renderSidebarNav(space, activeSlug) {
 }
 
 function renderSidebar(space, activeSlug, opts = {}) {
+  const homeActive = Boolean(opts.home);
   const adminActive = Boolean(opts.admin);
+  const helpActive = Boolean(opts.help);
 
   return `<aside class="sidebar" id="sidebar">
+      <div class="sidebar-top" id="sidebar-top">
+        <a class="sidebar-link sidebar-home${homeActive ? ' active' : ''}" href="/"${homeActive ? ' aria-current="page"' : ''}>Accueil</a>
+      </div>
       <div class="sidebar-header">Domaines</div>
       <nav class="sidebar-nav" id="sidebar-nav">${renderSidebarNav(space, activeSlug)}</nav>
       <div class="sidebar-footer">
         <nav class="sidebar-extra">
           <a class="sidebar-link sidebar-admin${adminActive ? ' active' : ''}" href="/administration"${adminActive ? ' aria-current="page"' : ''}>Administration</a>
+          <a class="sidebar-link sidebar-help${helpActive ? ' active' : ''}" href="/aide"${helpActive ? ' aria-current="page"' : ''}>Aide</a>
         </nav>
         <div class="install-box" id="install-box">
           <button type="button" class="btn-mini install-btn" id="install-btn" hidden>Installer l'application</button>
@@ -1004,15 +1073,17 @@ function renderShell(space, content, activeSlug, opts = {}) {
   <div class="shell">
     ${renderSidebar(space, activeSlug, opts)}
     <div class="content">
-      <header class="topbar">
+      <header class="topbar${opts.ancestry ? ' topbar-sticky' : ''}" id="topbar">
         <button type="button" class="btn sidebar-toggle" id="sidebar-toggle" title="Afficher/masquer le panneau">☰</button>
         <h1>${escapeHtml(opts.title || 'Mes projets')}</h1>
+        ${
+          opts.ancestry
+            ? '<nav class="ancestry" id="ancestry" aria-label="Hiérarchie des tâches mères"></nav>'
+            : ''
+        }
       </header>
       <main>${content}</main>
     </div>
-    <footer class="shell-footer">
-      <p class="hint">Survolez une ligne : bouton de sélection et menu ; sur un écran étroit ou sur un appareil sans souris, le bouton de sélection reste visible sans survol. Un clic sélectionne la ligne et ses sous-lignes ; un second clic sur la tête ne sélectionne que celle-ci. Le menu et la sélection se ferment dès que la souris quitte la ligne. Double-cliquez sur le bouton pour replier/déplier. Glissez depuis le bouton pour déplacer ; la ligne sélectionnée affiche une poignée, que l'on peut glisser au doigt pour déplacer la ligne et ses sous-lignes. Cliquez sur un titre pour le renommer ; pendant l'édition d'un titre ou sur une ligne sélectionnée, Tab indente la ligne et MAJ+Tab la désindente. Collez une étiquette sur le domaine pour le rattacher à un thème. Les thèmes et les domaines se gèrent depuis la page Administration, en pied du panneau.</p>
-    </footer>
   </div>
   <script src="/htmx.min.js"></script>
   <script src="/app.js"></script>
@@ -1070,17 +1141,61 @@ function renderPage(space, domain, expandIds) {
     space,
     renderOutline(domain, domain.slug, expandIds) + renderLabelsBar(space, domain),
     domain.slug,
-    { title: domain.name, labelsBar: true }
+    { title: domain.name, labelsBar: true, ancestry: true }
   );
 }
 
-function renderEmptyPage(space) {
-  return renderShell(
-    space,
-    '<div class="empty-state"><h2>Aucun domaine</h2><p>Créez un domaine depuis la page <a href="/administration">Administration</a> pour regrouper vos projets.</p></div>',
-    null,
-    { title: 'Mes projets' }
+// The in-progress lines of every domain, in the order the sidebar lists the
+// domains and, inside a domain, in the outline's display order. The display
+// order is repaired first, so a line is listed even when its persisted order was
+// incomplete. The function only reads the in-memory space: the homepage must not
+// create the default project of an empty domain nor persist anything.
+function homeTasks(space) {
+  const tasks = [];
+  for (const summary of space.domainList) {
+    const domain = space.domains.get(summary.id);
+    if (!domain) continue;
+    const index = indexOutline(domain.projects);
+    for (const id of ensureDisplayOrder(domain.projects, domain.displayOrder)) {
+      const entry = index.get(id);
+      if (!entry || entry.node.status !== 'in_progress') continue;
+      tasks.push({ domain, node: entry.node });
+    }
+  }
+  return tasks;
+}
+
+// One entry per in-progress line. The whole row is the existing deep link: it
+// opens the domain with the task's ancestors expanded (`?reveal`), scrolls to the
+// line and highlights it (`#node-<id>`). The title is plain text, because an
+// inline task link would nest an anchor inside the entry's anchor; the domain
+// name is repeated on every row so two tasks with the same title stay
+// distinguishable.
+function homeTaskEntry(domain, node) {
+  const href = `/domaine/${domain.slug}?reveal=${node.id}#node-${node.id}`;
+  return (
+    `<li><a class="home-task" href="${escapeHtml(href)}">` +
+    `<span class="home-task-title">${escapeHtml(titleLabel(node.title))}</span>` +
+    `<span class="home-task-domain">${escapeHtml(domain.name)}</span>` +
+    `</a></li>`
   );
+}
+
+function renderHomePage(space) {
+  const tasks = homeTasks(space);
+  let content;
+  if (!space.domainList.length) {
+    content =
+      '<div class="empty-state"><h2>Aucun domaine</h2><p>Créez un domaine depuis la page <a href="/administration">Administration</a> pour regrouper vos projets.</p></div>';
+  } else if (!tasks.length) {
+    content =
+      '<div class="empty-state"><h2>Aucune tâche en cours</h2><p>Aucune ligne n’est marquée « En cours ». Ouvrez le menu d’une ligne et choisissez « En cours » pour la retrouver ici.</p></div>';
+  } else {
+    content = `<ul class="home-tasks">${tasks
+      .map(({ domain, node }) => homeTaskEntry(domain, node))
+      .join('')}</ul>`;
+  }
+  return renderShell(space, content, null, { title: 'Tâches en cours', home: true });
 }
 
 /* ------------------------------------------------------------------ */
@@ -1298,6 +1413,84 @@ async function renderAdminPage(space) {
 }
 
 /* ------------------------------------------------------------------ */
+/* User guide page                                                     */
+/*                                                                     */
+/* The manual lives on its own page instead of a footer rendered on    */
+/* every page. It is static prose inside the regular shell: no domain  */
+/* document is read, so it works before the first domain exists.       */
+/* ------------------------------------------------------------------ */
+
+function renderGuidePage(space) {
+  const content = `<div class="guide">
+    <p class="guide-intro">Cette page rassemble les gestes disponibles dans l'outline, du plus courant au plus spécifique.</p>
+
+    <section class="guide-section">
+      <h2>Retrouver les tâches en cours</h2>
+      <p>La page d'accueil, à la racine, rassemble toutes les tâches marquées « En cours », tous domaines confondus, et rappelle le nom du domaine sur chaque ligne. Cliquez sur une tâche pour l'ouvrir dans son domaine, avec ses tâches mères dépliées et la ligne mise en évidence.</p>
+    </section>
+
+    <section class="guide-section">
+      <h2>Garder le fil de la hiérarchie</h2>
+      <p>En défilant, l'en-tête reste collé en haut de l'écran : il affiche le nom du domaine puis, sur les lignes suivantes, la chaîne des tâches mères de la première ligne visible. Cliquez sur une tâche de la chaîne pour y revenir.</p>
+    </section>
+
+    <section class="guide-section">
+      <h2>Sélectionner une ligne et ouvrir son menu</h2>
+      <p>Survolez une ligne pour faire apparaître son bouton de sélection et son menu. Sur un écran étroit ou sur un appareil sans souris, le bouton de sélection reste visible sans survol.</p>
+      <ul>
+        <li>Un clic sélectionne la ligne et ses sous-lignes ; un second clic sur la tête ne sélectionne que celle-ci.</li>
+        <li>Le menu et la sélection se ferment dès que le pointeur quitte la ligne.</li>
+      </ul>
+    </section>
+
+    <section class="guide-section">
+      <h2>Replier ou déplier une ligne</h2>
+      <p>Double-cliquez sur le bouton de sélection pour replier ou déplier la ligne et ses sous-lignes.</p>
+    </section>
+
+    <section class="guide-section">
+      <h2>Déplacer une ligne</h2>
+      <ul>
+        <li>Glissez depuis le bouton de sélection pour déplacer la ligne et ses sous-lignes.</li>
+        <li>La ligne sélectionnée affiche une poignée à six points : faites-la glisser au doigt pour déplacer la ligne et ses sous-lignes.</li>
+      </ul>
+    </section>
+
+    <section class="guide-section">
+      <h2>Renommer une ligne</h2>
+      <p>Cliquez sur un titre hors lien pour ouvrir son édition, ou utilisez l'action ✎ (« Renommer ») du menu.</p>
+    </section>
+
+    <section class="guide-section">
+      <h2>Ajouter une sous-tâche</h2>
+      <p>L'action + du menu ajoute une sous-tâche sous la ligne et ouvre son titre pour la nommer.</p>
+    </section>
+
+    <section class="guide-section">
+      <h2>Lier des tâches</h2>
+      <p>Copiez le lien d'une tâche depuis son menu (action 🔗), puis collez-le dans le titre d'une autre ligne : il devient un lien nommé. Cliquez sur ce lien pour ouvrir la ligne cible.</p>
+    </section>
+
+    <section class="guide-section">
+      <h2>Indenter et désindenter une ligne</h2>
+      <p>Pendant l'édition d'un titre ou sur une ligne sélectionnée, <kbd>Tab</kbd> indente la ligne et <kbd>MAJ+Tab</kbd> la désindente.</p>
+    </section>
+
+    <section class="guide-section">
+      <h2>Rattacher un thème</h2>
+      <p>Collez une étiquette sur le domaine pour le rattacher à un thème.</p>
+    </section>
+
+    <section class="guide-section">
+      <h2>Gérer les thèmes et les domaines</h2>
+      <p>Les thèmes et les domaines se gèrent depuis la page <a href="/administration">Administration</a>, en pied du panneau.</p>
+    </section>
+  </div>`;
+
+  return renderShell(space, content, null, { title: 'Aide', help: true });
+}
+
+/* ------------------------------------------------------------------ */
 /* Access routes (public) + protection of everything else              */
 /* ------------------------------------------------------------------ */
 
@@ -1353,23 +1546,33 @@ app.use(auth.guard, withSpace);
 /* Routes                                                              */
 /* ------------------------------------------------------------------ */
 
+// The root is the homepage: every in-progress task of the account, across its
+// domains. It is a plain read — no default project is created and nothing is
+// persisted, so opening `/` never writes to the account.
 app.get('/', (req, res) => {
-  const def = req.space.domainList[0];
-  if (!def) {
-    res.type('html').send(renderEmptyPage(req.space));
-    return;
-  }
-  res.redirect(302, `/domaine/${def.slug}`);
+  res.type('html').send(renderHomePage(req.space));
 });
 
 // The administration page works even with an empty space, so it is reachable
-// before the first domain exists (unlike `/`, which has nothing to redirect to).
+// before the first domain exists, as is the homepage (which then shows its
+// "no domain" empty state instead of listing tasks).
 app.get('/administration', async (req, res) => {
   try {
     res.type('html').send(await renderAdminPage(req.space));
   } catch (err) {
     console.error('[docdoc] page d\u2019administration :', err.message);
     res.status(500).send('Administration indisponible');
+  }
+});
+
+// The user guide is static prose rendered from the shell. Like the
+// administration page and the homepage, it works with an empty space.
+app.get('/aide', (req, res) => {
+  try {
+    res.type('html').send(renderGuidePage(req.space));
+  } catch (err) {
+    console.error('[docdoc] page d\u2019aide :', err.message);
+    res.status(500).send('Aide indisponible');
   }
 });
 
@@ -1393,6 +1596,18 @@ app.get('/domaine/:slug/api/outline', (req, res) => {
   res.json(domain.projects);
 });
 
+// Read one node of the account's domain. Used by the client to name a pasted
+// task link when the target line is not in the current DOM (another domain, or
+// a line hidden under a collapsed ancestor). The account is resolved from the
+// session by `withSpace`; another account's domain is therefore a 404.
+app.get('/domaine/:slug/api/nodes/:id', (req, res) => {
+  const domain = findDomainBySlug(req.space, req.params.slug);
+  if (!domain) return res.status(404).json({ error: 'Domaine introuvable' });
+  const found = findNode(domain.projects, req.params.id);
+  if (!found) return res.status(404).json({ error: 'Noeud introuvable' });
+  res.json({ id: found.node.id, title: found.node.title });
+});
+
 function domainFromReq(req, res) {
   const domain = findDomainBySlug(req.space, req.params.slug);
   if (!domain) {
@@ -1402,13 +1617,21 @@ function domainFromReq(req, res) {
   return domain;
 }
 
+// Create a node. With a parent (the "+" action), the parent is expanded so the
+// new child is visible, and the new node's id is echoed in the X-New-Node-Id
+// header so the client can open its title for naming.
 app.post('/domaine/:slug/api/nodes', (req, res) => {
   const domain = domainFromReq(req, res);
   if (!domain) return;
   const parentId = req.body.parentId || null;
   const node = createNode(domain, parentId);
   if (!node) return res.status(404).send('Parent introuvable');
+  if (parentId) {
+    const parent = findNode(domain.projects, parentId);
+    if (parent) parent.node.collapsed = false;
+  }
   persistDomain(req.space, domain);
+  res.set('X-New-Node-Id', node.id);
   res.type('html').send(renderOutline(domain, domain.slug, expandIdsFor(domain, req)));
 });
 

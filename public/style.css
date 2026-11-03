@@ -24,17 +24,9 @@ body {
 .shell {
   display: grid;
   grid-template-columns: auto 1fr;
-  grid-template-rows: 1fr auto;
   min-height: 100vh;
 }
 body.sidebar-collapsed .shell { grid-template-columns: 0 1fr; }
-
-.shell-footer {
-  grid-column: 1 / -1;
-  background: var(--card);
-  border-top: 1px solid var(--border);
-  padding: .75rem 1.5rem;
-}
 
 .sidebar {
   width: 240px;
@@ -47,6 +39,18 @@ body.sidebar-collapsed .shell { grid-template-columns: 0 1fr; }
   transition: width .15s ease;
 }
 body.sidebar-collapsed .sidebar { width: 0; padding: 0; border-right: none; }
+
+/* Home rubric: its own slot at the head of the panel, above "Domaines" and the
+   domain list, so the way back to the homepage is the panel's first entry. It
+   sits outside `#sidebar-nav`: the narrow-screen domain pick only listens to the
+   domain links and must not collapse the panel from here. The rule separates the
+   rubric from the domain list without adding a card of its own. */
+.sidebar-top {
+  padding-bottom: .6rem;
+  margin-bottom: .6rem;
+  border-bottom: 1px solid var(--border);
+}
+.sidebar-top .sidebar-home { font-weight: 600; }
 
 .sidebar-header {
   font-weight: 700;
@@ -92,8 +96,131 @@ body.sidebar-collapsed .sidebar { width: 0; padding: 0; border-right: none; }
 
 /* Content */
 .content { padding: 1.5rem; min-width: 0; }
-.topbar { display: flex; align-items: center; gap: .75rem; margin-bottom: 1rem; }
-.topbar h1 { margin: 0; font-size: 1.4rem; font-weight: 700; }
+
+/* The sticky hierarchy grows above the outline. Scroll anchoring would
+   compensate for that growth by scrolling, moving the first visible line and
+   feeding the new line back into the chain: the header would then oscillate.
+   The offset is kept stable by the chain reserve below instead. */
+main { overflow-anchor: none; }
+
+/* Sticky context bar (domain pages only): the domain name stays pinned and the
+   chain of parent tasks stacks below it, one level per line. The stack is in
+   the flow of the sticky header: growing it pushes the outline down instead of
+   covering it, so the first visible line stays exactly the one the chain
+   describes. Because both the header and the outline move by the same height,
+   the selected line does not depend on the stack's height — no oscillation.
+   `z-index: 15` paints it above the lines but below the context menu (20), the
+   labels bar (30) and the toast (100). */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  margin-bottom: 1rem;
+}
+.topbar-sticky {
+  position: sticky;
+  top: 0;
+  z-index: 15;
+  flex-wrap: wrap;
+  row-gap: .1rem;
+  margin-bottom: 0;
+  padding: .35rem 0 0;
+  background: var(--bg);
+}
+.topbar.is-stuck { box-shadow: 0 1px 0 var(--border), 0 3px 8px rgba(15, 23, 42, .06); }
+.topbar h1 {
+  margin: 0;
+  font-size: 1.4rem;
+  font-weight: 700;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Pinned parent-task rows, filled by `public/app.js` from the first visible
+   line. Each row has the same anatomy as an outline line: same bullet slot,
+   same gap, same indentation and same typography, so a task crossing the bar
+   stays aligned with the sub-tasks that remain visible. The last row is the one
+   straddling the separator: only the hidden part of the line's title is shown,
+   at the bar's bottom, so the label is transferred from the line to the bar
+   without ever being duplicated or absent. */
+.ancestry {
+  flex: 0 0 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  max-height: 40vh;
+  overflow-y: auto;
+  position: relative;
+  --pin-row: 1.25rem;
+  /* The bar's height change is animated, so the list glides by one line
+     instead of jumping when a task is pinned or unpinned. */
+  transition: height .16s ease;
+}
+.ancestry-item {
+  display: block;
+  position: relative;
+  height: var(--pin-row);
+  overflow: hidden;
+  font-size: 1rem;
+  line-height: 1.25;
+  text-decoration: none;
+}
+.ancestry-row {
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+  height: var(--pin-row);
+  padding: 0 .4rem;
+  margin-left: calc(var(--depth, 0) * 1.6rem);
+  color: #3f3f46;
+  white-space: nowrap;
+  border-radius: .3rem;
+  /* The visible fragment is the top part of the label, aligned with the hidden
+     part of the line's title; the line below shows the complementary part. */
+  transform: translateY(calc((1 - var(--pin-fraction, 1)) * var(--pin-row)));
+}
+.ancestry-bullet {
+  flex: 0 0 auto;
+  width: .7rem;
+  font-size: .7rem;
+  line-height: 1;
+  text-align: center;
+  color: var(--accent);
+}
+.ancestry-bullet::before { content: '●'; }
+.ancestry-item.is-partial .ancestry-bullet { visibility: hidden; }
+.ancestry-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ancestry-item:hover .ancestry-row,
+.ancestry-item:focus-visible .ancestry-row {
+  color: var(--accent-dark);
+  background: #eef2ff;
+  text-decoration: underline;
+}
+/* Separation between the pinned rows and the lines still displayed. It is the
+   bar's bottom edge, so it moves with the bar when a row is pinned or
+   unpinned. */
+.ancestry::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--border);
+}
+.ancestry:empty { height: 0; overflow: hidden; }
+.ancestry:empty::after { display: none; }
+
+@media (max-width: 640px) {
+  .ancestry-row { margin-left: calc(var(--depth, 0) * .8rem); }
+  .ancestry-bullet { width: 1.5rem; font-size: .9rem; color: #a1a1aa; }
+}
 
 h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
 
@@ -126,6 +253,63 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
 .empty-state h2 { margin: 0 0 .5rem; }
 .empty-state p { color: var(--done); }
 
+/* ------------------------------------------------------------------ */
+/* Home page: the in-progress tasks of every domain                    */
+/*                                                                     */
+/* One full-width link per task. The title may wrap on several lines    */
+/* and is never truncated; the domain badge is readable without hover   */
+/* and moves under the title below 640px, where the row is stacked.     */
+/* ------------------------------------------------------------------ */
+
+.home-tasks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: .35rem;
+  max-width: 48rem;
+}
+.home-task {
+  display: flex;
+  align-items: baseline;
+  gap: .75rem;
+  padding: .55rem .75rem;
+  border: 1px solid var(--border);
+  border-radius: .5rem;
+  background: var(--card);
+  color: #18181b;
+  text-decoration: none;
+}
+.home-task:hover { border-color: var(--accent); }
+.home-task:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.home-task-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.home-task-domain {
+  flex: 0 0 auto;
+  padding: .05rem .4rem;
+  border-radius: .3rem;
+  background: #f4f4f5;
+  color: #52525b;
+  font-size: .78rem;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .home-task {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: .2rem;
+  }
+  .home-task-domain { white-space: normal; }
+}
+
 /* Outline
    The outline is a flat sequence of lines: each `.line` carries its depth in
    `--depth` (set inline by the server) and is indented with a left margin
@@ -146,11 +330,12 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
   .outline { --outline-indent: .8rem; }
   /* Touch target: on a phone a line is tapped as a whole, not as a 21px text
      band. The row keeps its compact padding and centres its title, but grows
-     to 2.75rem (44px at the default 16px root), the fingertip-sized target of
-     WCAG 2.5.5, so two adjacent rows no longer share a band shorter than a
-     finger. `min-height`, not `height`: a wrapped title grows the row instead
-     of being clipped. */
-  .line { min-height: 2.75rem; }
+     to 2.475rem (39.6px at the default 16px root): exactly 90% of the 2.75rem
+     (44px) that was chosen for WCAG 2.5.5, tightened at the owner's request.
+     The whole row stays tappable and the 24x24px bullet keeps the WCAG 2.2 AA
+     target (2.5.8); only the 44px AAA band is traded away. `min-height`, not
+     `height`: a wrapped title grows the row instead of being clipped. */
+  .line { min-height: 2.475rem; }
 }
 
 .line {
@@ -163,6 +348,10 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
   cursor: default;
   user-select: none;
   margin-left: calc(var(--depth, 0) * var(--outline-indent, 1.6rem));
+  /* An anchor (a chain link, a deep link) stops under the sticky header instead
+     of being hidden by it. `--topbar-height` is published by the client; the
+     fallback keeps the value sane without JavaScript. */
+  scroll-margin-top: calc(var(--topbar-height, 4rem) + .5rem);
 }
 .line:hover { background: #f4f4f5; }
 
@@ -181,6 +370,7 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
   width: .7rem;
   flex: 0 0 auto;
   visibility: hidden;
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -199,12 +389,33 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
 .line.selected-head .bullet-dot { display: none; }
 .line.selected-head .bullet-grip { display: inline; }
 
+/* Collapsed line with sub-tasks: its bullet stays visible without hover and an
+   absolutely-positioned ring circles it, so the outline shows at a glance which
+   tasks are collapsed and still composed of hidden sub-tasks. The ring shares
+   the bullet's slot (it is out of flow), so it never shifts the title. */
+.line.collapsed .bullet { visibility: visible; }
+.bullet-subtasks {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: .66rem;
+  height: .66rem;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+/* The selected head line shows the grip in the bullet's slot: the ring gives
+   way to it so the handle stays legible. The ring returns with the dot when the
+   selection is cleared. */
+.line.selected-head .bullet-subtasks { display: none; }
+
 /* Without hover there is no other way to reach the selection button, so on a
    narrow screen — or on any device whose pointer cannot hover — the bullet is
    always visible and its target grows to 24x24 px (WCAG 2.2 AA, 2.5.8). The
-   44px row height comes from the touch-spacing rule above; min-height keeps the
-   target at 24px even without it. A mouse-driven desktop keeps the hover reveal
-   and the original 11.2px slot. */
+   touch-spacing rule above gives the row its ~39.6px height; min-height keeps
+   the target at 24px even without it. A mouse-driven desktop keeps the hover
+   reveal and the original 11.2px slot. */
 @media (max-width: 640px), (hover: none) {
   .bullet {
     visibility: visible;
@@ -215,6 +426,8 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
   }
   .line.selected .bullet { color: var(--accent); }
   .line.selected-head .bullet { color: var(--accent-dark); }
+  /* Same ring, scaled to the larger touch bullet. */
+  .bullet-subtasks { width: .9rem; height: .9rem; }
 }
 
 /* Deep-linked line (the current URL fragment target). Visually distinct from a
@@ -228,6 +441,26 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
 .title { cursor: text; line-height: 1.25; }
 .title.status-in-progress { font-weight: 700; }
 .title.status-done { font-style: italic; color: var(--done); text-decoration: line-through; }
+
+/* Inline task link inside a title. The link keeps the title's status styling:
+   a done line keeps the muted colour and the strike-through. */
+.title-link {
+  color: var(--accent-dark);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.title-link:hover { color: var(--accent); }
+.title-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+.title.status-done .title-link {
+  color: inherit;
+  text-decoration: none;
+}
 
 .title-input {
   font: inherit;
@@ -452,11 +685,20 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
 }
 
 /* Reserve room on a domain page so the fixed bar never covers the last outline
-   lines or the footer's text. */
-body.has-labels-bar main { padding-bottom: 4rem; }
-body.has-labels-bar .shell-footer { padding-bottom: 4.5rem; }
-@media (max-width: 640px) {
-  body.has-labels-bar .shell-footer { padding-bottom: 5.5rem; }
+   lines. The tallest possible chain is reserved at the bottom (`--chain-reserve`)
+   and the current chain's height is subtracted: the header growing by one line
+   and the page's bottom shrinking by the same line keep the document height
+   constant, so the scroll is never clamped when the chain changes at the very
+   end of the page. The padding follows the same short transition as the bar, so
+   the two compensate each other while the list glides. */
+body.has-labels-bar main {
+  padding-bottom: calc(4rem + var(--chain-reserve, 0px) - var(--chain-height, 0px));
+  transition: padding-bottom .16s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ancestry,
+  body.has-labels-bar main { transition: none; }
 }
 
 /* ------------------------------------------------------------------ */
@@ -574,7 +816,7 @@ body.has-labels-bar .shell-footer { padding-bottom: 4.5rem; }
 /* ------------------------------------------------------------------ */
 
 .sidebar-extra { display: flex; flex-direction: column; gap: .25rem; margin-bottom: .35rem; }
-.sidebar-admin { font-weight: 600; }
+.sidebar-admin, .sidebar-help { font-weight: 600; }
 
 .admin { display: flex; flex-direction: column; gap: 1.75rem; padding-bottom: 2rem; max-width: 70rem; }
 .admin-section h2 {
@@ -729,3 +971,24 @@ body.has-labels-bar .shell-footer { padding-bottom: 4.5rem; }
   font-size: .9rem;
 }
 .pwa-update .btn { padding: .3rem .6rem; font-size: .85rem; }
+
+/* ------------------------------------------------------------------ */
+/* User guide page ("Aide")                                            */
+/* ------------------------------------------------------------------ */
+
+.guide { max-width: 46rem; padding-bottom: 2rem; }
+.guide-intro { margin: 0 0 1.5rem; color: #3f3f46; }
+.guide-section { margin: 0 0 1.5rem; }
+.guide-section h2 { margin: 0 0 .4rem; font-size: 1.05rem; font-weight: 700; }
+.guide-section p { margin: 0 0 .5rem; }
+.guide-section ul { margin: 0; padding-left: 1.25rem; }
+.guide-section li { margin: .2rem 0; }
+.guide-section a { color: var(--accent-dark); }
+.guide-section kbd {
+  font: inherit;
+  font-size: .85em;
+  padding: 0 .25rem;
+  border: 1px solid var(--border);
+  border-radius: .25rem;
+  background: var(--card);
+}

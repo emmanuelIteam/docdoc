@@ -189,6 +189,75 @@ function acceptDialogs(page) {
 }
 
 /* ------------------------------------------------------------------ */
+/* 6.0 The user guide, before any domain exists                        */
+/* ------------------------------------------------------------------ */
+
+test('6.0 la page Aide est accessible depuis le pied du panneau, avant tout domaine', async ({ browser }) => {
+  // Runs before 6.1, while account A still has no domain: neither the sidebar
+  // entry nor the guide may depend on one.
+  const context = await signedInBrowser(browser, stateA);
+  const page = await context.newPage();
+
+  await page.goto('/');
+  await expect(page.locator('.empty-state')).toBeVisible();
+  await expect(page.locator('footer.shell-footer')).toHaveCount(0);
+
+  const entries = page.locator('.sidebar-extra a');
+  await expect(entries).toHaveCount(2);
+  await expect(entries.nth(0)).toHaveText('Administration');
+  await expect(entries.nth(1)).toHaveText('Aide');
+  await expect(entries.nth(1)).toHaveAttribute('href', '/aide');
+
+  await entries.nth(1).click();
+  await expect(page).toHaveURL(/\/aide$/);
+  await expect(page.locator('.topbar h1')).toHaveText('Aide');
+  await expect(page.locator('a.sidebar-help')).toHaveClass(/active/);
+  await expect(page.locator('a.sidebar-help')).toHaveAttribute('aria-current', 'page');
+  await expect(page.locator('a.sidebar-admin')).not.toHaveClass(/active/);
+
+  // The manual is in the page itself, not in a footer.
+  await expect(page.locator('footer.shell-footer')).toHaveCount(0);
+  const guide = page.locator('.guide');
+  await expect(guide).toBeVisible();
+  await expect(page.locator('.guide-section h2')).toHaveText([
+    'Retrouver les tâches en cours',
+    'Garder le fil de la hiérarchie',
+    'Sélectionner une ligne et ouvrir son menu',
+    'Replier ou déplier une ligne',
+    'Déplacer une ligne',
+    'Renommer une ligne',
+    'Ajouter une sous-tâche',
+    'Lier des tâches',
+    'Indenter et désindenter une ligne',
+    'Rattacher un thème',
+    'Gérer les thèmes et les domaines',
+  ]);
+  await expect(guide).toContainText('chaîne des tâches mères');
+  await expect(guide).toContainText('MAJ+Tab');
+  await expect(guide).toContainText('poignée');
+  await expect(guide).toContainText('lien nommé');
+  await expect(guide.locator('a[href="/administration"]')).toHaveCount(1);
+
+  // On a narrow screen the manual wraps instead of truncating or scrolling
+  // sideways.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(guide).toBeVisible();
+  expect(
+    await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)
+  ).toBe(true);
+
+  // The administration page has no documentation footer either, and its own
+  // entry stays the active one.
+  await page.goto('/administration');
+  await expect(page.locator('.topbar h1')).toHaveText('Administration');
+  await expect(page.locator('a.sidebar-admin')).toHaveClass(/active/);
+  await expect(page.locator('a.sidebar-help')).not.toHaveClass(/active/);
+  await expect(page.locator('footer.shell-footer')).toHaveCount(0);
+
+  await context.close();
+});
+
+/* ------------------------------------------------------------------ */
 /* 6.1 The whole administration flow, in one serial walk-through       */
 /* ------------------------------------------------------------------ */
 
@@ -245,12 +314,12 @@ test('6.1 créer, renommer, colorer, réordonner, étiqueter, archiver, restaure
   await expect(page.locator('#admin-domains-table tbody tr')).toHaveCount(2);
   await expect(domainRow(page, 'alpha')).toHaveCount(1);
   await expect(domainRow(page, 'beta')).toHaveCount(1);
-  await expect(page.locator('#sidebar .sidebar-link').first()).toHaveText('Alpha');
+  await expect(page.locator('#sidebar-nav .sidebar-link').first()).toHaveText('Alpha');
 
   // Reorder the domains: Beta first, in the table and in the sidebar.
   await domainRow(page, 'beta').locator('button[title="Monter"]').click();
   await expect(page.locator('#admin-domains-table tbody tr').nth(0)).toContainText('/domaine/beta');
-  await expect(page.locator('#sidebar .sidebar-link').first()).toHaveText('Beta');
+  await expect(page.locator('#sidebar-nav .sidebar-link').first()).toHaveText('Beta');
 
   // The matrix attaches Travail (first row) to Beta (first column, after the
   // reorder). The sidebar regroups the domain under that theme.
@@ -357,6 +426,10 @@ test('6.2 le panneau et la page domaine n’offrent plus de contrôles de gestio
   await expect(sidebar.locator('form[action^="/api/themes"]')).toHaveCount(0);
   await expect(sidebar.locator('button[title="Renommer"], button[title="Supprimer"]')).toHaveCount(0);
   await expect(sidebar.locator('a.sidebar-admin')).toHaveCount(1);
+  await expect(sidebar.locator('a.sidebar-help')).toHaveCount(1);
+  // The documentation footer is gone, and Aide is not active here.
+  await expect(page.locator('footer.shell-footer')).toHaveCount(0);
+  await expect(sidebar.locator('a.sidebar-help')).not.toHaveClass(/active/);
 
   // The domain page keeps its content, with the labels in a floating bar and no
   // management control of its own.
@@ -370,6 +443,8 @@ test('6.2 le panneau et la page domaine n’offrent plus de contrôles de gestio
   await expect(page.locator('.toolbar')).toHaveCount(0);
   await expect(page.locator('.rename-input, .admin-rename')).toHaveCount(0);
   await expect(page.locator('form[action$="/archive"]')).toHaveCount(0);
+  await expect(page.locator('footer.shell-footer')).toHaveCount(0);
+  await expect(page.locator('a.sidebar-help')).not.toHaveClass(/active/);
 
   await context.close();
 });
@@ -524,9 +599,11 @@ test('6.8 le renommage d’un domaine est derrière un bouton ✎', async ({ bro
   await expect(page).toHaveURL(/\/administration$/);
   await expect(domainRow(page, 'renomme')).toHaveCount(1);
 
-  // The domain page itself still offers no renaming control.
+  // The domain page itself still offers no domain renaming control. The line
+  // context menu's own "Renommer" action is a line-title control, not a domain
+  // one, so the assertion targets the domain form specifically.
   await page.goto('/domaine/renomme');
-  await expect(page.locator('.rename-input, .admin-rename, [title="Renommer"]')).toHaveCount(0);
+  await expect(page.locator('.rename-input, .admin-rename')).toHaveCount(0);
 
   await context.close();
 });

@@ -42,6 +42,50 @@ The system SHALL allow each line to be collapsed to hide its children and expand
 - **WHEN** a node was collapsed and the user reloads the page
 - **THEN** the node remains collapsed
 
+### Requirement: Indicate that a collapsed line has sub-tasks
+
+Le système SHALL, lorsqu'une ligne possède des sous-lignes et qu'elle est repliée, afficher sa puce sans attendre le survol — y compris sur un écran large — et SHALL la marquer d'un anneau superposé signalant que la ligne est composée de sous-tâches masquées. Il SHALL laisser la puce dans son état habituel (révélée au survol seulement sur un écran large) lorsque la ligne est dépliée ou lorsqu'elle ne possède aucune sous-ligne. L'anneau SHALL occuper l'emplacement existant de la puce sans décaler le titre de la ligne ni celui des lignes voisines. Il SHALL être remplacé par la poignée de glisser lorsque la ligne repliée devient la tête sélectionnée, la poignée occupant l'emplacement de la puce, et SHALL revenir avec le point dès que la sélection est levée. L'état annoncé par l'étiquette accessible de la puce SHALL préciser que la ligne est repliée et qu'elle contient des sous-tâches masquées.
+
+#### Scenario: Une ligne repliée montre sa puce sans survol
+- **WHEN** une ligne qui possède des sous-tâches est repliée et que ni le pointeur ni la sélection ne la survole, dans une fenêtre de 1280 px
+- **THEN** sa puce est visible et l'anneau de composition est affiché
+
+#### Scenario: L'anneau signale la composition en sous-tâches
+- **WHEN** la puce d'une ligne repliée est affichée avec l'anneau
+- **THEN** l'anneau est un cercle d'un pixel de bordure, superposé au point de sélection, et sa présence distingue la ligne d'une ligne sans sous-tâche
+
+#### Scenario: Une ligne dépliée garde la puce habituelle
+- **WHEN** une ligne qui possède des sous-tâches est dépliée, dans une fenêtre de 1280 px et sans survol
+- **THEN** elle n'affiche pas d'anneau et sa puce reste masquée jusqu'au survol, comme avant
+
+#### Scenario: Une ligne sans sous-tâche n'affiche jamais d'anneau
+- **WHEN** une ligne ne possède aucune sous-ligne
+- **THEN** sa puce n'affiche pas d'anneau, qu'elle soit survolée, sélectionnée ou non
+
+#### Scenario: Le dépliage retire l'anneau
+- **WHEN** l'utilisateur déplie une ligne repliée en double-cliquant sa puce
+- **THEN** ses sous-lignes redeviennent visibles, l'anneau disparaît et la puce reprend son état habituel
+
+#### Scenario: Le repliage ajoute l'anneau
+- **WHEN** l'utilisateur replie une ligne qui possède des sous-tâches en double-cliquant sa puce
+- **THEN** ses sous-lignes sont masquées, l'anneau apparaît et la puce reste visible sans survol
+
+#### Scenario: Une ligne dépliée par la révélation n'affiche pas d'anneau
+- **WHEN** la page est ouverte avec `?reveal=<id>` et que la ligne cible a un ancêtre persisté replié, qui est donc affiché déplié
+- **THEN** cet ancêtre n'affiche pas d'anneau, et l'anneau revient quand la même page est ouverte sans `?reveal`
+
+#### Scenario: L'anneau ne décale pas le titre
+- **WHEN** une ligne passe de dépliée à repliée, puis de repliée à dépliée
+- **THEN** le titre de cette ligne et celui des lignes voisines conservent exactement la même position horizontale
+
+#### Scenario: La poignée de la tête sélectionnée remplace l'anneau
+- **WHEN** une ligne repliée qui possède des sous-tâches est sélectionnée comme tête
+- **THEN** sa puce affiche la poignée de glisser à l'emplacement du point, sans anneau, et l'anneau revient avec le point quand la sélection est levée
+
+#### Scenario: L'étiquette accessible annonce le repli
+- **WHEN** une lectrice d'écran lit l'étiquette de la puce d'une ligne repliée qui possède des sous-tâches
+- **THEN** l'étiquette mentionne que la ligne est repliée et qu'elle contient des sous-tâches masquées
+
 ### Requirement: Reveal a selection button on hover
 
 Le système SHALL afficher le bouton de sélection d'une ligne lorsque le pointeur la survole. Il SHALL le garder visible sans survol lorsque la fenêtre fait 640 px de large ou moins, ou lorsque l'appareil ne dispose pas d'un pointeur capable de survol ; dans ce cas, la cible tactile du bouton SHALL mesurer au moins 24 × 24 px. Sur un écran large doté d'un pointeur, le bouton SHALL se cacher dès que le pointeur quitte la ligne.
@@ -128,29 +172,36 @@ The system SHALL allow a line that has children to be collapsed or expanded by d
 - **THEN** the node's state is unchanged
 
 ### Requirement: Render lines with compact vertical spacing
-Le système SHALL afficher les lignes de l'outline avec un espacement vertical compact lorsque la largeur de la fenêtre est supérieure à 640 px, et SHALL donner à chaque ligne une hauteur d'au moins 2,75 rem (44 px à la taille de police par défaut de 16 px) lorsque cette largeur est inférieure ou égale à 640 px, afin que chaque ligne offre une cible tactile utilisable au doigt. La hauteur SHALL être une hauteur minimale : une ligne dont le titre revient sur plusieurs lignes SHALL grandir au-delà de 2,75 rem sans que son texte soit tronqué. L'espacement SHALL être purement visuel : la profondeur portée par chaque ligne (`data-depth`), son parent (`data-parent`), l'ordre d'affichage et la hiérarchie SHALL rester inchangés. Le changement de hauteur SHALL suivre un redimensionnement de la fenêtre sans rechargement de la page.
+
+Le système SHALL afficher les lignes de l'outline avec un espacement vertical compact lorsque la largeur de la fenêtre est supérieure à 640 px, et SHALL donner à chaque ligne une hauteur d'au moins 2,475 rem (39,6 px à la taille de police par défaut de 16 px, soit 90 % de la hauteur de 2,75 rem retenue auparavant) lorsque cette largeur est inférieure ou égale à 640 px, afin que chaque ligne reste une cible tactile utilisable au doigt tout en resserrant la liste. La hauteur SHALL être une hauteur minimale : une ligne dont le titre revient sur plusieurs lignes SHALL grandir au-delà de 2,475 rem sans que son texte soit tronqué. L'espacement SHALL être purement visuel : la profondeur portée par chaque ligne (`data-depth`), son parent (`data-parent`), l'ordre d'affichage et la hiérarchie SHALL rester inchangés. Le changement de hauteur SHALL suivre un redimensionnement de la fenêtre sans rechargement de la page.
 
 #### Scenario: Lignes compactes sur un écran large
+
 - **WHEN** la fenêtre fait 1280 px de large
 - **THEN** chaque ligne conserve la hauteur compacte actuelle, d'environ 21 px (à la taille de police par défaut de 16 px), et l'espacement vertical entre lignes voisines reste minimal
 
 #### Scenario: Hauteur tactile sur un écran étroit
+
 - **WHEN** la fenêtre fait 390 px de large
-- **THEN** chaque ligne mesure au moins 44 px de haut, son titre est centré verticalement, et deux lignes voisines ne se chevauchent pas
+- **THEN** chaque ligne mesure au moins 39,6 px de haut, son titre est centré verticalement, et deux lignes voisines ne se chevauchent pas
 
 #### Scenario: Le seuil de 640 px est inclusif
+
 - **WHEN** la fenêtre fait exactement 640 px de large
-- **THEN** chaque ligne mesure au moins 44 px de haut ; à 641 px, elle retrouve la hauteur compacte
+- **THEN** chaque ligne mesure au moins 39,6 px de haut ; à 641 px, elle retrouve la hauteur compacte
 
 #### Scenario: Un titre sur plusieurs lignes n'est pas tronqué
+
 - **WHEN** un titre revient sur plusieurs lignes dans une fenêtre étroite
-- **THEN** la ligne grandit au-delà de 44 px et affiche le titre entier, sans troncature ni ellipse
+- **THEN** la ligne grandit au-delà de 39,6 px et affiche le titre entier, sans troncature ni ellipse
 
 #### Scenario: La profondeur, le parent et l'ordre sont inchangés
+
 - **WHEN** l'espacement change à cause de la largeur de la fenêtre
 - **THEN** chaque ligne conserve son `data-depth`, son `data-parent` et sa place dans l'ordre affiché ; seule sa hauteur change
 
 #### Scenario: La bascule suit un redimensionnement sans rechargement
+
 - **WHEN** la fenêtre est redimensionnée de 1280 px à 390 px puis de nouveau à 1280 px
 - **THEN** les lignes passent de la hauteur compacte à la hauteur tactile puis reviennent à la hauteur compacte, sans rechargement de la page ni requête au serveur
 
@@ -285,34 +336,6 @@ Le système SHALL proposer, dans le menu contextuel de chaque ligne, une action 
 - **WHEN** l'utilisateur invoque l'action « copier le lien » sur une ligne
 - **THEN** un lien incluant le paramètre de révélation et le fragment d'ancre de la ligne (ex. `/domaine/<slug>?reveal=<id>#node-<id>`) est copié dans le presse-papiers
 
-### Requirement: Document line interactions in a page footer
-
-Le système SHALL rendre le paragraphe de documentation d'utilisation des lignes de l'outline dans un pied de page qui s'étend sur toute la largeur de la page, sous le panneau latéral et la colonne de contenu, au lieu de la zone d'actions située au-dessus de l'outline. La documentation SHALL décrire les interactions prises en charge : bouton de sélection et menu révélés au survol, bouton restant visible sans survol sur un écran étroit, sélection d'une ligne avec ses sous-lignes par un clic, second clic sur la tête pour ne sélectionner que celle-ci, fermeture du menu et de la sélection quand la souris quitte la ligne, double-clic sur le bouton pour replier/déplier, glisser depuis le bouton pour déplacer, poignée affichée sur la ligne sélectionnée et glisser de cette poignée au doigt pour déplacer la ligne, clic sur un titre pour le renommer, indentation d'une ligne par la touche `Tab` et désindentation par `MAJ+Tab`, et collage d'une étiquette de thème sur le domaine.
-
-#### Scenario: The footer documents line interactions
-- **WHEN** la page d'un domaine est rendue
-- **THEN** un pied de page est affiché en bas de page, s'étendant sur toute la largeur sous le panneau latéral et le contenu, et décrivant les interactions avec les lignes
-
-#### Scenario: The footer documents the indent and outdent shortcuts
-- **WHEN** la page d'un domaine est rendue
-- **THEN** le paragraphe de documentation mentionne la touche `Tab` pour indenter une ligne et la combinaison `MAJ+Tab` pour la désindenter
-
-#### Scenario: The documentation is not in the action toolbar
-- **WHEN** la page d'un domaine est rendue
-- **THEN** le paragraphe de documentation n'apparaît pas dans la zone d'actions / bandeau au-dessus de l'outline
-
-#### Scenario: The footer spans the full page width below the shell
-- **WHEN** la page est rendue avec un panneau latéral et une colonne de contenu
-- **THEN** le pied de page est positionné en bas sur toute la largeur sous les deux colonnes (et non dans la seule colonne de contenu)
-
-#### Scenario: The footer is shown even without a domain
-- **WHEN** la page est rendue alors qu'aucun domaine n'existe
-- **THEN** le pied de page de documentation est tout de même affiché en bas de page
-
-#### Scenario: Le pied de page documente la poignée et le glisser au doigt
-- **WHEN** la page d'un domaine est rendue
-- **THEN** le paragraphe de documentation mentionne la poignée affichée sur la ligne sélectionnée et le fait de la faire glisser au doigt pour déplacer la ligne
-
 ### Requirement: Identify a line's subtree by ancestry in the flat outline
 
 Le système SHALL déterminer le sous-arbre d'une ligne affichée (pour la sélection, la portée des statuts, le fantôme de glisser-déposer et le rejet d'un dépôt sur un descendant) comme l'ensemble des lignes affichées après elle dont la chaîne des parents (`data-parent`) contient cette ligne, et SHALL ne plus se reposer sur l'imbrication DOM pour ce calcul. La profondeur seule ne SHALL PAS servir à délimiter un sous-arbre : une ligne insérée juste sous une ligne X s'affiche entre X et ses sous-lignes, donc les sous-lignes d'une ligne ne sont pas nécessairement les lignes qui la suivent immédiatement.
@@ -385,3 +408,54 @@ Le système SHALL afficher, à la tête de la ligne sélectionnée, une poignée
 - **WHEN** une ligne est sélectionnée sur un appareil tactile ou dans une fenêtre de 640 px de large ou moins
 - **THEN** la poignée est visible sans survol et sa cible tactile mesure au moins 24 × 24 px
 
+### Requirement: Keep the domain name and the parent-task hierarchy pinned while scrolling
+
+Le système SHALL, sur la page d'un domaine, maintenir en haut de la fenêtre une barre d'en-tête qui affiche le nom du domaine puis, sous lui, les lignes des tâches mères de la première ligne visible de l'outline, du projet de niveau 1 jusqu'à son parent immédiat. Chaque ligne épinglée SHALL reprendre l'anatomie de la ligne de l'outline — même puce, même largeur de puce, même pas d'indentation et même typographie — afin que son alignement avec les sous-tâches qui restent visibles soit exact. Lorsqu'une tâche mère dont le titre est partiellement masqué par la barre est la première ligne visible, seul le fragment masqué de son titre SHALL être épinglé, comme dernier maillon, et la partie visible du titre SHALL rester dans la ligne : le libellé SHALL être partagé par la barre de séparation sans être dupliqué ni absent. La barre de séparation entre les lignes épinglées et les lignes affichées SHALL se déplacer en douceur quand une ligne est épinglée ou désépinglée, et la liste SHALL glisser d'une ligne au lieu de sauter ; la hauteur totale de la page SHALL rester constante. La barre SHALL rester collée en haut de la fenêtre pendant tout le défilement de la page. L'ensemble SHALL être recalculé quand le défilement fait entrer une autre ligne sous la barre. Il SHALL être vide lorsque la première ligne visible est un projet de niveau 1 entièrement visible sous la barre, et le nom du domaine SHALL rester affiché. Chaque ligne épinglée SHALL rester un lien vers l'ancre de la tâche. Une ligne atteinte par une ancre SHALL s'arrêter sous la barre et ne SHALL PAS être masquée par elle.
+
+#### Scenario: La barre reste collée en haut pendant le défilement
+- **WHEN** l'utilisateur fait défiler la page d'un domaine
+- **THEN** l'en-tête reste à la même position en haut de la fenêtre et le nom du domaine reste affiché
+
+#### Scenario: Les lignes épinglées ont l'anatomie de l'outline
+- **WHEN** une tâche est épinglée
+- **THEN** son libellé porte la même puce et commence à la même abscisse que le libellé de la ligne de même profondeur, chaque niveau restant indenté d'un cran de plus que le précédent
+
+#### Scenario: Le libellé à cheval est partagé par la barre de séparation
+- **WHEN** une tâche mère dont le titre est partiellement masqué par la barre est la première ligne visible
+- **THEN** seul le fragment masqué de son titre est épinglé en bas de la barre, la partie visible reste dans la ligne, et les deux fragments se rejoignent au séparateur sans doublon ni trou
+
+#### Scenario: La barre de séparation se déplace en douceur
+- **WHEN** une ligne est épinglée ou désépinglée
+- **THEN** la hauteur de la barre change avec une transition courte, la liste glisse d'une ligne au lieu de sauter, et la position de défilement reste stable
+
+#### Scenario: La chaîne suit le défilement
+- **WHEN** le défilement amène sous la barre une ligne d'une autre branche
+- **THEN** la chaîne est remplacée par celle de la nouvelle première ligne visible
+
+#### Scenario: Un projet racine n'a pas de tâche mère
+- **WHEN** la première ligne visible est un projet de niveau 1 entièrement visible sous la barre
+- **THEN** la chaîne est vide et seul le nom du domaine reste affiché
+
+#### Scenario: Chaque maillon ramène à sa tâche
+- **WHEN** l'utilisateur active un maillon de la chaîne
+- **THEN** la page défile jusqu'à cette tâche et la ligne s'arrête sous la barre, sans être masquée
+
+#### Scenario: La chaîne survit à un re-rendu de l'outline
+- **WHEN** l'outline est re-rendue par une action (statut, déplacement, pli, renommage) alors que la page est défilée
+- **THEN** la chaîne est recalculée, ses lignes sont réutilisées par identifiant et décrivent toujours la première ligne visible
+
+#### Scenario: L'outline n'est pas recouvert par la barre
+- **WHEN** la chaîne est affichée au-dessus de l'outline
+- **THEN** la première ligne de l'outline commence sous l'en-tête et n'est pas masquée par la chaîne
+
+#### Scenario: Le défilement reste stable en fin de page
+- **WHEN** la page est défilée jusqu'à son extrémité et que la chaîne change de hauteur
+- **THEN** la position de défilement reste stable, sans oscillation entre deux états de la chaîne
+
+#### Scenario: La barre reste lisible sur un écran étroit
+- **WHEN** la fenêtre fait 390 px de large et que la page est défilée
+- **THEN** le nom du domaine et la chaîne restent affichés dans la barre, sans dépasser la largeur de la fenêtre
+
+#### Scenario: Le menu contextuel reste accessible sous la barre
+- **WHEN** une ligne située juste sous la barre est sélectionnée
+- **THEN** son menu contextuel s'affiche au-dessus de la barre et reste cliquable

@@ -244,20 +244,72 @@ Sauvegarder le bucket **avant** toute bascule : l'adoption déplace les clés, e
 pnpm start
 ```
 
-## Compilation de l'application
+## Publier une version
 
-## Création et enregistrement de l'image docker
+La publication est automatique : **pousser un tag de version** déclenche le pipeline GitHub
+(`.github/workflows/release.yml`), qui construit et minifie l'image, la publie sur Docker Hub sous
+l'étiquette du tag, puis bascule le conteneur Scaleway sur cette image et vérifie la version servie.
+
 ```bash
-docker build -t emmanuel7044/docdoc:1.5 .
+git tag 1.10
+git push origin 1.10
+```
+
+Le tag est repris tel quel : il doit être une version numérique sans préfixe (`1.2`, `1.10`,
+`1.2.3`). Un tag `v1.10` ou `1.10-rc` est refusé au premier job, sans rien publier. Un tag publié ne
+se déplace plus : un correctif prend un nouveau numéro.
+
+### Ce que fait le pipeline
+
+| Étape | Détail |
+| --- | --- |
+| Validation | Le tag doit correspondre à `^[0-9]+\.[0-9]+(\.[0-9]+)?$`. |
+| Build | `docker build --build-arg APP_VERSION=<tag>` : l'étape `assets` du `Dockerfile` minifie `app.js`, `auth.js`, `pwa.js` et `style.css`, et inscrit le tag dans `CACHE_VERSION` de `sw.js`. |
+| Publication | `docker.io/emmanuel7044/docdoc:<tag>`, image `linux/amd64` unique, sans tag `latest`. |
+| Déploiement | `scw container container update` sur le conteneur `docdoc-app`, puis attente du statut `ready` sur la nouvelle image (10 minutes au plus). |
+| Contrôle | Si la variable `APP_URL` est définie, `GET /sw.js` doit déclarer `CACHE_VERSION = '<tag>'` ; sinon l'étape est ignorée. |
+
+### Secrets et variables GitHub
+
+À déclarer dans **Settings → Secrets and variables → Actions** du dépôt.
+
+| Nom | Type | Valeur |
+| --- | --- | --- |
+| `DOCKERHUB_USERNAME` | secret | Compte Docker Hub propriétaire du dépôt `emmanuel7044/docdoc`. |
+| `DOCKERHUB_TOKEN` | secret | Jeton d'accès Docker Hub en lecture/écriture (jamais le mot de passe). |
+| `SCW_ACCESS_KEY` | secret | Clé d'accès Scaleway dédiée à la CI. |
+| `SCW_SECRET_KEY` | secret | Clé secrète associée. |
+| `SCW_DEFAULT_PROJECT_ID` | variable | Projet Scaleway qui porte le conteneur. |
+| `SCW_DEFAULT_REGION` | variable | `fr-par` (facultatif : c'est la valeur par défaut du pipeline). |
+| `SCW_CONTAINER_ID` | variable | Identifiant du conteneur `docdoc-app` : le seul UUID (`aa6a055f-b622-401e-9413-de4ff8d9279b` aujourd'hui), sans le préfixe `fr-par/` que montre l'état Terraform. `scw container container list` le donne. |
+| `APP_URL` | variable | URL publique (par exemple `https://docdoc.re`) ; active le contrôle de version servie. |
+
+La clé Scaleway de la CI n'a besoin que du droit de modifier le conteneur. Celle du provider OpenTofu
+(`secrets.sops.yaml`) convient, mais une clé dédiée se révoque sans casser `tofu apply`.
+
+### Construire l'image à la main
+
+```bash
+docker build --build-arg APP_VERSION=1.11 -t emmanuel7044/docdoc:1.11 .
 ```
 ```bash
-docker push emmanuel7044/docdoc:1.5
+docker push emmanuel7044/docdoc:1.11
+```
+Sans `--build-arg`, la constante `CACHE_VERSION` du dépôt est conservée : c'est le comportement voulu
+en développement local. Le pipeline ne pousse jamais l'image depuis un poste de travail.
+
+### Retour arrière
+
+Remettre le conteneur sur le tag précédent, sans reconstruire ni republier :
+
+```bash
+scw container container update <id-du-conteneur> image=docker.io/emmanuel7044/docdoc:<tag-précédent>
 ```
 
-> Le tag poussé doit correspondre à `var.app_image` dans `main.tf`
-> (`docker.io/emmanuel7044/docdoc:1.1` par défaut).
-> Le dépôt Docker Hub `emmanuel7044/docdoc` ne publie que les tags `1.0` et `1.1` — le tag `2.0`
-> utilisé par une version antérieure de `main.tf` n'existe pas.
+Le même geste se fait depuis la console Scaleway (conteneur → Image). Les images publiées restent
+disponibles sur Docker Hub ; le contrôle `/sw.js` permet de confirmer que l'ancienne version sert de
+nouveau.
+
 > L'image est **amd64 uniquement**.
 
 ## Approvisionnement de l'infrastructure sur Scaleway (offre gratuite)
@@ -289,7 +341,7 @@ ne pas augmenter `memory_limit` / `cpu_limit` sans vérifier la consommation du 
 
 | Variable | Défaut | Rôle |
 | --- | --- | --- |
-| `app_image` | `docker.io/emmanuel7044/docdoc:1.1` | Image Docker déployée. |
+| `app_image` | `docker.io/emmanuel7044/docdoc:1.9` | Image utilisée à la création du conteneur. Ensuite, l'image est pilotée par le pipeline de release (voir « Publier une version »). |
 | `keep_warm` | `true` | `true` = une instance reste allumée (réponse instantanée, toujours 0 €). `false` = mise à l'échelle à zéro (quelques secondes de démarrage à la première requête). |
 | `rp_id` | domaine personnalisé, sinon endpoint généré | RP ID WebAuthn : nom d'hôte sans schéma ni port. Laisser vide : la valeur est déduite de `domain_name`. Ne renseigner que pour forcer une valeur (par exemple le domaine parent quand l'application est servie sur un sous-domaine). |
 | `rp_origin` | `https://` + RP ID effectif | Origine HTTPS complète. Laisser vide : la valeur est déduite. |
@@ -462,23 +514,31 @@ saisissent **dans** sops, et le YAML en clair ne doit jamais exister sur le disq
 > source ne chiffre pas l'état. D'où `git rm --cached terraform.tfstate terraform.tfstate.backup`
 > puis `printf 'terraform.tfstate*\n' >> .gitignore` — le fichier est aujourd'hui suivi par git.
 
-> **Ordre de bascule.** L'image publiée sous le tag `1.1` **ne contient pas** le contrôle d'accès.
-> Publier d'abord une nouvelle image (`1.2`), puis mettre `app_image` à jour et appliquer. Déployer
-> le nouveau `main.tf` sans publier l'image laisserait la variable `rp_id` pointer sur une
-> application qui l'ignore — sans conséquence, mais l'accès resterait ouvert.
+> **Ordre de bascule.** Le pipeline publie l'image **avant** de basculer le conteneur : une version
+> dont l'image n'existe pas ne peut pas être déployée. À la main, l'ordre reste le même : pousser
+> l'image, puis mettre l'image du conteneur à jour (voir « Publier une version »).
 
 ### Déploiement
 
-```bash
 # 1. Initialiser le projet et télécharger le provider Scaleway
+```bash
 tofu init
+```
 
 # 2. Prévisualiser les modifications qui vont être appliquées
+```bash
 sops exec-env secrets.sops.yaml 'tofu plan'
+```
 
 # 3. Créer l'infrastructure sur Scaleway et démarrer le conteneur
+```bash
 sops exec-env secrets.sops.yaml 'tofu apply'
 ```
+
+> **L'image n'est plus pilotée par OpenTofu.** `scaleway_container.app` déclare
+> `lifecycle.ignore_changes = [image]` : un `tofu apply` ultérieur ne ramène pas l'image au défaut de
+> `var.app_image` et n'annule donc pas le déploiement fait par le pipeline. Pour changer de version,
+> pousser un tag (voir « Publier une version »), pas modifier `app_image`.
 
 ### Rattacher le domaine personnalisé (`docdoc.re`)
 
@@ -558,10 +618,14 @@ d'un autre compte sur un poste partagé). L'outline reste en ligne : il n'y a pa
 
 Après toute modification d'un fichier précaché (`style.css`, `app.js`, `pwa.js`, `auth.js`,
 `simplewebauthn.js`, `htmx.min.js`, `manifest.webmanifest`, `offline.html`, une icône), **incrémenter
-`CACHE_VERSION`** dans `public/sw.js` (`v1` → `v2`). Sans cela, les navigateurs déjà équipés peuvent
-continuer à servir l'ancienne copie jusqu'à l'expiration ou la fermeture de tous les onglets. Le
-nouveau worker prend la main et affiche un bandeau **« Nouvelle version disponible »** avec un bouton
-**Recharger** : le rechargement n'est jamais imposé, pour ne pas perdre une saisie en cours.
+`CACHE_VERSION`** dans `public/sw.js` (`v1` → `v2`) pour une exécution depuis les sources. Sans cela,
+les navigateurs déjà équipés peuvent continuer à servir l'ancienne copie jusqu'à l'expiration ou la
+fermeture de tous les onglets. Le nouveau worker prend la main et affiche un bandeau **« Nouvelle
+version disponible »** avec un bouton **Recharger** : le rechargement n'est jamais imposé, pour ne pas
+perdre une saisie en cours.
+
+Une release n'a pas besoin de cet incrément : le build de l'image remplace `CACHE_VERSION` par le tag
+(`scripts/build-assets.js`), donc chaque version publiée part sur un cache neuf.
 
 Les icônes se régénèrent avec `pwsh -File scripts/generate-pwa-icons.ps1` (Windows, outil ponctuel :
 les PNG produits sont versionnés, rien n'est généré au démarrage).

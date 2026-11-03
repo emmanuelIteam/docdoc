@@ -447,8 +447,9 @@ async function main() {
   assert.strictEqual(res.status, 200);
   assert.strictEqual(res.json.email, AUTHORIZED);
   res = await call('GET', '/');
-  assert.strictEqual(res.status, 302, 'le domaine adopté doit être servi');
-  assert.strictEqual(res.location, '/domaine/voyages');
+  assert.strictEqual(res.status, 200, 'la racine sert la page d\u2019accueil');
+  // The adopted domain has no in-progress line, so the homepage lists nothing.
+  assert.match(res.text, /Aucune tâche en cours/);
   res = await call('GET', '/domaine/voyages');
   assert.strictEqual(res.status, 200);
   assert.match(res.text, /Réserver le camping/);
@@ -644,12 +645,16 @@ async function main() {
   assert.deepStrictEqual(outlineLines(res.text), [{ id: 'n1', parent: '', depth: 0 }]);
   ok('réindent : le domaine adopté est laissé dans son état d\u2019origine');
 
-  // The page footer is where line interactions are documented, so the new
-  // shortcuts have to be part of it.
+  // The user guide, not a footer on every page, documents the line
+  // interactions; the new shortcuts have to be part of it.
   res = await call('GET', '/domaine/voyages');
   assert.strictEqual(res.status, 200);
-  assert.match(res.text, /Tab indente la ligne et MAJ\+Tab la désindente/);
-  ok('pied de page : les raccourcis Tab / MAJ+Tab sont documentés');
+  assert.ok(!res.text.includes('shell-footer'), 'la page domaine ne doit plus porter le pied de page de documentation');
+  res = await call('GET', '/aide');
+  assert.strictEqual(res.status, 200);
+  assert.ok(res.text.includes('indente la ligne et'));
+  assert.ok(res.text.includes('MAJ+Tab'));
+  ok('page Aide : les raccourcis Tab / MAJ+Tab sont documentés');
 
   // 14. Passkey management lists exactly this account's passkey.
   res = await call('GET', '/auth/passkeys');
