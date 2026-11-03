@@ -43,6 +43,6 @@
 
 ## 6. Vérification de bout en bout
 
-- [ ] 6.1 Pousser un tag `1.10` et vérifier : run vert, image `docker.io/emmanuel7044/docdoc:1.10` présente sur Docker Hub, conteneur `ready` sur cette image, `/sw.js` déclare `CACHE_VERSION = '1.10'`
-- [ ] 6.2 Pousser un tag invalide (`v1.11`) et vérifier que le run échoue à la validation, sans image publiée ni conteneur modifié
-- [ ] 6.3 Simuler un retour arrière vers le tag précédent et vérifier que `/sw.js` sert de nouveau l'ancienne version de cache
+- [x] 6.1 Pousser un tag `1.10` et vérifier : run vert, image `docker.io/emmanuel7044/docdoc:1.10` présente sur Docker Hub, conteneur `ready` sur cette image, `/sw.js` déclare `CACHE_VERSION = '1.10'`
+- [x] 6.2 Pousser un tag invalide (`v1.11`) et vérifier que le run échoue à la validation, sans image publiée ni conteneur modifié
+- [x] 6.3 Simuler un retour arrière vers le tag précédent et vérifier que `/sw.js` sert de nouveau l'ancienne version de cache

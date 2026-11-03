@@ -11,7 +11,7 @@
 
 ## 3. Spec et PWA
 
-- [ ] 3.1 Reporter la nouvelle exigence dans `openspec/specs/domain-navigation/spec.md` à l'archivage du changement (delta : retrait de l'exigence limitée aux domaines, ajout de l'exigence élargie).
+- [x] 3.1 Reporter la nouvelle exigence dans `openspec/specs/domain-navigation/spec.md` à l'archivage du changement (delta : retrait de l'exigence limitée aux domaines, ajout de l'exigence élargie).
 - [x] 3.2 Incrémenter `CACHE_VERSION` dans `public/sw.js`.
 
 ## 4. Vérifications

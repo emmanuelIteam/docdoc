@@ -9,7 +9,7 @@
 
 ## 3. Spec et PWA
 
-- [ ] 3.1 Reporter l'exigence dans `openspec/specs/theme-management/spec.md` à l'archivage du changement.
+- [x] 3.1 Reporter l'exigence dans `openspec/specs/theme-management/spec.md` à l'archivage du changement.
 - [x] 3.2 Incrémenter `CACHE_VERSION` dans `public/sw.js`.
 
 ## 4. Vérifications
