@@ -1,716 +1,267 @@
-# docdoc : Gestion de projet perso
-https://docdoc.re
+# docdoc
 
-## Assistant de codage deepseek harness
-https://github.com/deepseek-ai/deepseek-harness
+Outliner de gestion de projets personnels (maison, voitures, voyages). Application Node.js + Express qui rend le HTML côté serveur, enrichie par htmx, avec les données dans un bucket compatible S3 et un accès verrouillé par passkeys.
 
-### Lancement
-```bash
-npx @deepseek-ai/dsh web
-```
+Production : <https://docdoc.re>
 
-### Facturation
-https://platform.deepseek.com/usage
+## Par où commencer
+
+| Je veux… | Lire |
+| --- | --- |
+| installer et lancer l'application en local | ce README, jusqu'à « Première connexion » |
+| poser des points d'arrêt et déboguer | [Déboguer](#déboguer) |
+| créer ou modifier l'infrastructure cloud | [docs/deployer-infrastructure.md](docs/deployer-infrastructure.md) |
+| compiler et déployer une nouvelle version | [docs/publier-une-version.md](docs/publier-une-version.md) |
+| comprendre les passkeys, les données, la PWA | [docs/exploitation.md](docs/exploitation.md) |
+
+La documentation est du Markdown versionné avec le code : pas de site séparé, pas de générateur. Ce README est le point d'entrée du développeur ; les procédures d'exploitation vivent dans `docs/`.
 
 ## Prérequis
 
-## Scaleway  
-### Générer une Clé API Scaleway (IAM)  
-https://console.scaleway.com/billing/overview
+| Outil | Version | Rôle |
+| --- | --- | --- |
+| Node.js | 22 ou plus | Runtime de l'application (l'image de production utilise `node:22-alpine`). |
+| npm | fourni avec Node | Installation et scripts. `pnpm` fonctionne aussi : le dépôt porte les deux lockfiles. |
+| Docker + Compose v2 | récent | MinIO (stockage S3 local) et Mailpit (boîte aux lettres locale). |
+| Git | — | Le dépôt. |
+| Chrome ou Edge | — | DevTools. `npm run test:e2e` pilote le Chrome installé (`channel: 'chrome'`), sans télécharger de navigateur. |
 
-OpenTofu a besoin d'identifiants pour interagir avec ton compte via l'API Scaleway.  
-Rends-toi sur la Console Scaleway.  
-En haut à droite, clique sur ton profil puis sur IAM & API Keys.  
-Onglet API Keys $\rightarrow$ clique sur + Generate API key.  
-Conserve précieusement :  Access Key (ex: SCWXXXXXXXXXXXXX)  
-Secret Key (affichée une seule fois à la création, ex: 11111111-2222-3333-4444-555555555555)  
-
-## Configuration opentofu
-Création du fichier .env et référencement dans gitignore pour l'écarter de la SCM
-
-Enregistrement des variables d'environnement sur le compte windows personnel
+Vérification en une commande :
 
 ```bash
-.env
+node --version && npm --version && docker compose version
 ```
 
-## Stockage des données (bucket S3)
+Sous Windows, les commandes sont données pour Git Bash. Sous PowerShell, remplacer `cp` par `Copy-Item` et `rm` par `Remove-Item` ; le reste est identique.
 
-L'application persiste ses données (domaines + thèmes) dans un bucket compatible S3, et non plus dans le filesystem local. Elle est configurée via ces variables d'environnement :
+## Démarrage en quatre étapes
 
-| Variable | Rôle |
-| --- | --- |
-| `S3_ENDPOINT` | URL de l'API S3 (`https://s3.fr-par.scw.cloud` en prod, `http://minio:9000` en local) |
-| `S3_REGION` | Région (`fr-par`) |
-| `S3_BUCKET` | Nom du bucket (`docdoc-json-storage`) |
-| `AWS_ACCESS_KEY_ID` | Clé d'accès S3 (prod : clé IAM ; local : `minioadmin`) |
-| `AWS_SECRET_ACCESS_KEY` | Clé secrète S3 |
+### 1. Installer les dépendances
 
-En production, ces variables sont déjà injectées par le `main.tf` dans le conteneur Scaleway (voir plus bas).
+```bash
+npm install
+```
 
-### Développement local : MinIO + Mailpit
+`package-lock.json` est la référence : c'est ce que l'image de release installe avec `npm ci`. Si tu préfères pnpm, `pnpm install` utilise `pnpm-lock.yaml` ; ne mélange pas les deux gestionnaires dans un même `node_modules`.
 
-`docker-compose.yml` lance deux services, et l'application tourne sur l'hôte :
+### 2. Démarrer le stockage et la boîte aux lettres
+
+```bash
+docker compose up -d minio mailpit
+docker compose ps
+```
+
+**Nomme les services.** Le service `web` de `docker-compose.yml` est actif : un `docker compose up -d` sans nom construit aussi l'image et démarre l'application dans un conteneur sur le port 3000, en concurrence avec `npm start`. Pour ne lancer que les dépendances, la commande ci-dessus est la bonne (variante tout-en-conteneurs plus bas).
 
 | Service | Rôle | Adresse |
 | --- | --- | --- |
-| `minio` | Stockage objet compatible S3 (les données) | API http://127.0.0.1:19000 · console `http://127.0.0.1:19001` |
-| `mailpit` | Catcher SMTP : reçoit tous les emails au lieu d'une vraie boîte | SMTP localhost:1026 · interface `http://localhost:8025` |
+| `minio` | Stockage objet compatible S3 (les données) | API <http://127.0.0.1:19000> · console <http://127.0.0.1:19001> |
+| `mailpit` | Catcher SMTP : reçoit tous les emails (conservés en mémoire, perdus à l'arrêt du conteneur) | SMTP `localhost:1026` · interface <http://localhost:8025> |
+
+Identifiants MinIO : `minioadmin` / `minioadmin`. Les ports publiés sont `19000`/`19001` et non `9000`/`9001` : sur certains postes Windows, un agent d'interception réseau d'entreprise répond à la place du conteneur sur `9000` et toutes les lectures S3 restent suspendues (voir « Dépannage local »). À l'intérieur du conteneur, les ports restent `9000`/`9001`.
+
+Le service `minio` utilise `pgsty/silo`, fork maintenu de MinIO (images MinIO retirées de Docker Hub), épinglé volontairement. Le premier démarrage télécharge donc l'image : c'est normal qu'il soit plus lent que les suivants.
+
+### 3. Créer le fichier `.env`
 
 ```bash
-docker compose up -d          # MinIO + Mailpit
-cp .env.example .env          # déjà réglé pour ce montage
+cp .env.example .env
 ```
+
+`.env.example` est déjà réglé pour ce montage : `S3_ENDPOINT=http://127.0.0.1:19000`, `EMAIL_PROVIDER=smtp`, `SMTP_HOST=localhost`, `SMTP_PORT=1026`. L'application lit `.env` au démarrage **sans écraser** les variables déjà présentes dans l'environnement (celles injectées par le conteneur restent prioritaires), et OpenTofu ne lit jamais `.env`.
+
+Si un `.env` existe déjà, ne l'écrase pas : il peut contenir les identifiants Scaleway du provider OpenTofu. Fusionne les deux jeux de variables.
+
+Les variables qui comptent en local :
+
+| Variable | Valeur locale | Rôle |
+| --- | --- | --- |
+| `S3_ENDPOINT` | `http://127.0.0.1:19000` | API S3 de MinIO, vue depuis l'hôte. |
+| `S3_BUCKET` | `docdoc-json-storage` | Bucket des données. |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | `minioadmin`, `minioadmin` | Identifiants MinIO. |
+| `EMAIL_PROVIDER` | `smtp` | `smtp` vers Mailpit ; `dev` écrit le code dans les journaux. |
+| `SMTP_HOST`, `SMTP_PORT` | `localhost`, `1026` | Relais Mailpit vu depuis l'hôte. |
+| `SESSION_SECRET` | `dev-secret-a-remplacer` | Signature du cookie. Le changer déconnecte les sessions. |
+| `AUTHORIZED_EMAILS` | `emmanuel.grandiere@laposte.net` | Seules ces adresses peuvent créer un espace. |
+| `PORT` | `3000` | Port d'écoute. |
+
+Référence complète (toutes les variables, fournisseurs d'email, OTP) : [docs/exploitation.md](docs/exploitation.md).
+
+### 4. Lancer l'application
+
 ```bash
-pnpm start                    
+npm start
 ```
-#### l'application sur `http://localhost:3000`
 
-Le fichier `.env.example` est pré-réglé pour ce montage : `S3_ENDPOINT=http://127.0.0.1:19000`,
-`EMAIL_PROVIDER=smtp`, `SMTP_HOST=localhost`, `SMTP_PORT=1026`. Les messages sont conservés en
-mémoire par Mailpit : ils disparaissent à l'arrêt du conteneur, ce qui est le comportement voulu
-pour un catcher. Aucun compte, aucun domaine à authentifier, aucune clé à demander.
+L'application écoute sur <http://localhost:3000>. Au démarrage, les journaux annoncent le mode d'envoi des codes, le bucket utilisé, les comptes autorisés, puis :
 
-MinIO est publié sur `19000`/`19001` et non sur `9000`/`9001` (les ports internes du conteneur
-restent `9000`/`9001`). Sur un poste Windows équipé d'un agent d'interception réseau d'entreprise
-(Zscaler Z-Tunnel), le port `9000` de l'hôte est capté par cet agent : il répond à la place de
-MinIO, si bien que `HeadBucket` semble réussir (« 200 Connection Established ») alors que tous les
-`GET`/`PUT` restent suspendus indéfiniment — l'application démarre, puis la moindre lecture de
-données ne revient jamais. `S3_ENDPOINT` vise de plus `127.0.0.1` et non `localhost`, dont la
-résolution IPv6 (`::1`) traverse le même agent (d'où un `ECONNRESET: socket hang up` immédiat).
+```
+Projets outliner lancé sur http://localhost:3000
+```
 
-#### Console d'admin MinIO : `http://127.0.0.1:19001`
-Utilisateur et mot de passe : `minioadmin`
+Le bucket est créé au premier démarrage s'il n'existe pas. Contre un bucket vide, l'application importe une seule fois les fichiers historiques de `data/`.
 
-MinIO n'est plus distribuable sans compte : les images `minio/minio` ont été retirées de Docker Hub,
-`quay.io/minio` répond `401` sans authentification, les binaires de `dl.min.io` renvoient `410` et
-le dépôt GitHub a été archivé en avril 2026. La relève est le fork communautaire maintenu par
-Pigsty, renommé `pgsty/silo` en août 2026 : il reprend le serveur MinIO à l'identique (format de
-données `.minio.sys`, variables `MINIO_*`, routes `/minio/*`) et **restaure la console web** que
-MinIO avait retirée en mai 2025. `docker-compose.yml` épingle donc
-`pgsty/silo:RELEASE.2026-11-12T00-00-00Z` — version figée volontairement, le projet est jeune et a
-déjà changé de nom. Pour un autre serveur compatible S3 (LocalStack, SeaweedFS, Scaleway…), il
-suffit de changer `S3_ENDPOINT` et les identifiants : le code de l'application ne change pas.
+`Ctrl+C` arrête le serveur. Il n'y a **aucune étape de compilation** en développement : le HTML est rendu par le serveur et `public/` est servi tel quel. La minification n'existe que dans l'image de release.
 
-#### Inspecter le bucket en ligne de commande
+## Première connexion
 
-Le conteneur embarque le client du fork, livré sous le nom `mcli` avec `mc` comme alias, déjà
-configuré par la variable `MC_HOST_local` :
+1. Ouvrir <http://localhost:3000> : la page d'accueil propose « Créer un compte » et « Se connecter ».
+2. Saisir une adresse présente dans `AUTHORIZED_EMAILS` (par défaut `emmanuel.grandiere@laposte.net`). Une adresse absente est refusée **avant** tout envoi.
+3. Récupérer le code à six chiffres :
+   - avec `EMAIL_PROVIDER=smtp` (le défaut), dans Mailpit : <http://localhost:8025> ;
+   - avec `EMAIL_PROVIDER=dev`, directement dans le terminal : `[docdoc][dev] code pour … : 123456 (valable 10 min)`.
+4. Enregistrer la passkey (Windows Hello, Touch ID, clé de sécurité, gestionnaire de mots de passe). L'espace est créé à ce moment-là.
+
+Une passkey est liée au **nom d'hôte** servi : ouvre toujours l'application par la même adresse (`localhost` ou `127.0.0.1`, pas les deux en alternance), sinon le navigateur ne propose pas la passkey. En développement, le RP ID et l'origine sont déduits de l'adresse utilisée.
+
+Récupération (appareil perdu, toutes les passkeys perdues), structure des données et configuration des emails : [docs/exploitation.md](docs/exploitation.md).
+
+## Déboguer
+
+### Points d'arrêt Node.js
+
+```bash
+node --inspect server.js
+```
+
+Puis ouvrir `chrome://inspect` (ou `edge://inspect`) et cliquer sur **Open dedicated DevTools for Node** : les points d'arrêt se posent dans `server.js`, `storage.js`, `accounts.js`… Pour s'arrêter dès la première ligne, utiliser `node --inspect-brk server.js`.
+
+Le port du débogueur est `9229`, indépendant du port applicatif `3000`.
+
+Dans VS Code, la configuration d'attachement équivalente (débogueur JavaScript intégré, aucune extension) :
+
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Attach docdoc",
+      "type": "node",
+      "request": "attach",
+      "port": 9229
+    }
+  ]
+}
+```
+
+### Redémarrer à chaque modification
+
+```bash
+node --watch server.js
+```
+
+`--watch` (Node 22+) redémarre le processus quand un fichier chargé change. Les modifications de `.env` ne sont pas surveillées : relance le serveur pour les prendre en compte.
+
+### Lire les codes d'accès dans le terminal
+
+Dans `.env`, passer `EMAIL_PROVIDER=dev` puis relancer : aucun email n'est envoyé, le code s'affiche dans les journaux. Le serveur annonce son mode au démarrage (`Envoi des codes : …`). Ce mode est refusé en production.
+
+### Front-end : aucun build en développement
+
+`public/app.js`, `auth.js`, `style.css`, `pwa.js` sont servis tels quels : modifier le fichier puis recharger la page suffit. Seule l'image de release les minifie (`scripts/build-assets.js`).
+
+Si tu modifies un fichier précaché par le service worker (`style.css`, `app.js`, `pwa.js`, `auth.js`, `simplewebauthn.js`, `htmx.min.js`, `manifest.webmanifest`, `offline.html`, une icône), **incrémente `CACHE_VERSION`** dans `public/sw.js` (`v1` → `v2`). Sinon le navigateur peut continuer à servir l'ancienne copie. En développement, le plus simple reste DevTools → Application → Service Workers → *Update on reload*, ou *Bypass for network*.
+
+### Tests
+
+```bash
+npm test          # parcours d'accès par passkey, sans navigateur
+npm run test:e2e  # tests Playwright dans le Chrome installé
+```
+
+| Commande | Ce qu'elle fait | Prérequis |
+| --- | --- | --- |
+| `npm test` | Pilote un serveur réel en HTTP avec un authentificateur logiciel (port `3456`), sur un répertoire de données jetable. Le `.env` du développeur est ignoré (`DOCDOC_ENV_FILE`). | Aucun conteneur. |
+| `npm run test:e2e` | Démarre l'application dans le processus de test (port `3499`, données jetables), pilote Chrome avec un authentificateur virtuel. `E2E_PORT` change le port. | Chrome installé ; pas de Docker. |
+
+### Suivre une requête
+
+Les échanges htmx se lisent dans l'onglet **Réseau** des DevTools : les réponses sont des fragments HTML. Le serveur ne journalise pas chaque requête ; pour suivre un aller-retour précis, poser un point d'arrêt dans la route concernée de `server.js`.
+
+## Arrêter et réinitialiser
+
+| Besoin | Commande |
+| --- | --- |
+| Arrêter l'application | `Ctrl+C` dans le terminal. |
+| Arrêter les conteneurs | `docker compose stop` |
+| Supprimer les conteneurs (données conservées) | `docker compose down` |
+| **Effacer les données locales** | `docker compose down -v` — supprime le volume `gestion-prj-perso-minio-data`. |
+
+Après `down -v`, le prochain démarrage recrée un bucket vide et réimporte une fois les fichiers de `data/`. Les passkeys enregistrées sur l'appareil pointent alors vers un compte disparu : il faut recréer un espace avec la même adresse.
+
+Inspecter le bucket en ligne de commande (le conteneur embarque le client `mc`) :
 
 ```bash
 docker compose exec minio mc ls --recursive local/docdoc-json-storage/
 docker compose exec minio mc cat local/docdoc-json-storage/users/<id>/themes.json
 ```
 
-Le service `web` (l'application dans un conteneur) est présent **non commenté** dans
-`docker-compose.yml` : un `docker compose up -d` construit donc aussi l'image `docdoc`, démarre
-l'application dans compose (port 3000, `SMTP_HOST=mailpit`) et entre en concurrence avec `pnpm start`
-sur l'hôte. Pour ne lancer que les dépendances — le montage décrit ci-dessus —, nommer les services :
-`docker compose up -d minio mailpit`.
+Journaux des dépendances : `docker compose logs -f minio mailpit`.
 
-Le bucket et les données sont persistés dans le volume MinIO (`gestion-prj-perso-minio-data`). Au
-premier démarrage contre un bucket vide, l'application importe les fichiers locaux de `data/`.
+## Variante : tout dans Docker
 
-## Accès par passkeys (WebAuthn)
+Pour lancer l'application elle-même dans Compose (elle est alors configurée avec `S3_ENDPOINT=http://minio:9000` et `SMTP_HOST=mailpit`) :
 
-L'application est verrouillée : sans session, aucune page, aucun fragment et aucune route API ne
-révèle quoi que ce soit. L'authentification se fait par **passkey** (Touch ID, Windows Hello, clé de
-sécurité, gestionnaire de mots de passe), amorcée une seule fois par un **code à usage unique envoyé
-par email**.
-
-### L'enrôlement, en quatre étapes
-
-1. La page d'accueil indique qu'aucun espace n'est associé au navigateur et propose **deux portes** :
-   « Créer un compte » et « Se connecter ». Le serveur ne peut pas savoir si vous avez déjà un
-   espace : l'absence de session n'est pas l'absence de compte.
-2. Vous saisissez votre adresse email. Elle est comparée à la liste d'habilitation **avant tout
-   envoi** : une adresse non autorisée est refusée immédiatement, et aucun email n'est expédié
-   (docdoc ne doit pas pouvoir servir de relais d'envoi).
-3. Un code à six chiffres est envoyé (valable 10 minutes, usage unique, 5 essais, renvoi possible
-   après 60 secondes). Le code ouvre une **session d'enrôlement** limitée : elle ne donne accès ni
-   aux domaines, ni aux thèmes, ni à aucune route de données.
-4. La passkey est enregistrée. L'espace du compte est créé à ce moment-là seulement.
-
-### Où vivent les données
-
-Chaque compte possède son arborescence dans le bucket :
-
-```
-users/
-├── by-email/{sha256(email)}.json        index email → compte (aucune adresse en clair)
-├── by-credential/{credentialId}.json    index passkey → compte (connexion sans saisir d'email)
-└── {userId}/                            userId opaque, jamais l'adresse email
-    ├── account.json
-    ├── themes.json
-    ├── domains/{id}.json
-    └── archive/{id}.json
+```bash
+docker compose up -d --build
+docker compose logs -f web
 ```
 
-Un domaine, un thème ou une archive d'un compte ne peut pas être atteint depuis un autre compte :
-toutes les clés sont préfixées par `users/{userId}/`, et le compte est toujours résolu depuis la
-session, jamais depuis un paramètre de requête.
+L'application répond sur <http://localhost:3000>. Arrêter d'abord `npm start` : les deux se disputent le port. `NODE_ENV` reste `development` dans Compose, ce qui est voulu sur `http://localhost` (cookie non `Secure`, RP déduit).
 
-### Récupération : appareil perdu, toutes les passkeys perdues
+## Ports et services
 
-Le parcours par code email **reste disponible en permanence** et constitue la seule porte de secours.
-
-| Situation | Marche à suivre |
+| Port | Service |
 | --- | --- |
-| Nouvel appareil, passkey existante ailleurs | Page d'accueil → « Se connecter » (aucune adresse à saisir : le navigateur propose la passkey). |
-| Appareil perdu, une autre passkey subsiste | Se connecter, puis « Mes passkeys » → révoquer la passkey perdue. |
-| Toutes les passkeys perdues | Page d'accueil → « Créer un compte » → saisir l'adresse autorisée → code → enregistrer une passkey. **Le compte existant est réutilisé**, aucune donnée n'est dupliquée. La nouvelle passkey s'ajoute aux anciennes. |
-| Adresse email elle-même perdue | Aucun recours : c'est le seul point de défaillance du dispositif. Voir « Risques » ci-dessous. |
+| `3000` | Application (`npm start`, `docker compose` ou `PORT`). |
+| `19000` / `19001` | API S3 / console MinIO. |
+| `1026` / `8025` | SMTP / interface Mailpit. |
+| `9229` | Débogueur Node (`--inspect`). |
+| `3456` | `npm test` (interne). |
+| `3499` | `npm run test:e2e` (interne, `E2E_PORT` pour changer). |
 
-La **dernière passkey ne peut pas être révoquée** : l'interface le refuse et demande d'en enregistrer
-une autre d'abord.
+## Dépannage local
 
-### Configuration
-
-| Variable | Défaut | Rôle |
+| Symptôme | Cause probable | Solution |
 | --- | --- | --- |
-| `SESSION_SECRET` | — | Signature du cookie de session. **Obligatoire en production** : sans elle le serveur refuse de démarrer. Générer avec `openssl rand -hex 32`. |
-| `AUTHORIZED_EMAILS` | `emmanuel.grandiere@laposte.net` | Adresses autorisées, séparées par des virgules. La règle est en configuration, pas en dur dans le code. |
-| `RP_ID` | `localhost` en développement | Nom d'hôte servi, **sans schéma ni port** (`docdoc.example.org`). |
-| `RP_ORIGIN` | `http://localhost:3000` en développement | Origine complète, schéma et port compris. |
-| `EMAIL_PROVIDER` | `dev` | `dev` (code écrit dans les journaux), `smtp`, `scaleway` ou `brevo`. |
-| `EMAIL_FROM` | — | Expéditeur. Voir « Domaine d'envoi » ci-dessous. |
-| `EMAIL_REGION` | `fr-par` | Région Scaleway Transactional Email. |
-| `SMTP_HOST` | — | Relais SMTP : `localhost` pour Mailpit, `mailpit` depuis un conteneur. |
-| `SMTP_PORT` | `1026` | Port SMTP (`1026` Mailpit sur cet hôte, `1025` port interne du conteneur, `587` soumission, `465` TLS implicite). |
-| `SMTP_SECURE` | `false` | `true` pour du TLS dès le premier octet (port 465). |
-| `SMTP_REQUIRE_TLS` | `false` | `true` pour exiger STARTTLS sur un port en clair. |
-| `SMTP_ALLOW_SELF_SIGNED` | `false` | `true` pour accepter un certificat auto-signé (vérification active sinon). |
-| `SMTP_USER`, `SMTP_PASSWORD` | — | Identifiants du relais, s'il en exige. |
-| `SCW_SECRET_KEY` | — | Clé secrète IAM pour l'API Transactional Email (en-tête `X-Auth-Token`). |
-| `SCW_DEFAULT_PROJECT_ID` | — | Projet Scaleway rattaché aux envois. |
-| `BREVO_API_KEY` | — | Identifiant Brevo si `EMAIL_PROVIDER=brevo`. |
-| `OTP_TTL_SECONDS` | `600` | Durée de vie d'un code. |
-| `OTP_RESEND_COOLDOWN_SECONDS` | `60` | Délai minimum entre deux demandes de code. |
-| `OTP_MAX_ATTEMPTS` | `5` | Essais par code avant invalidation. |
-| `OTP_MAX_REQUESTS` | `5` | Demandes de code autorisées par fenêtre. |
-| `OTP_REQUEST_WINDOW_SECONDS` | `900` | Durée de la fenêtre de limitation. |
-| `DOCDOC_DATA_DIR` | `./data` | Emplacement des fichiers historiques, importés une seule fois. |
+| `EADDRINUSE` sur `3000` | `npm start` déjà lancé, ou service `web` de Compose. | `docker compose stop web`, ou `Get-NetTCPConnection -LocalPort 3000` sous PowerShell. |
+| L'application démarre mais toute lecture de données reste suspendue | Le port `9000` de l'hôte est capté par un agent d'interception (Zscaler). | Utiliser `19000` et `127.0.0.1` (réglage par défaut de `.env.example`). |
+| `ECONNRESET: socket hang up` au démarrage | `localhost` résolu en `::1`, qui traverse l'agent d'interception. | `S3_ENDPOINT=http://127.0.0.1:19000`, jamais `localhost`. |
+| Aucun code reçu | Mauvais fournisseur ou mauvaise boîte. | Vérifier `EMAIL_PROVIDER` ; `smtp` → Mailpit `8025`, `dev` → journaux. |
+| La passkey n'est pas proposée | Origine changée (`localhost` ↔ `127.0.0.1`), ou compte absent. | Toujours la même adresse ; recréer l'espace par code email si besoin. |
+| Le navigateur sert une ancienne version du front | Service worker et cache précaché. | DevTools → Application → Service Workers (mise à jour), ou incrémenter `CACHE_VERSION`. |
+| `module « esbuild » introuvable` | Dépendances non installées. | `npm install`. |
+| Compose semble bloqué au premier lancement | Téléchargement de `pgsty/silo` et de Mailpit. | Attendre, puis `docker compose ps`. |
 
-### ⚠ Le RP ID gèle les passkeys
+## Structure du dépôt
 
-Une passkey est liée pour sa vie au **nom d'hôte** servi par l'application. Tant que le conteneur
-Scaleway n'expose que son endpoint généré
-(`docdocnamespace572c01fb-docdoc-app.functions.fnc.fr-par.scw.cloud`), recréer le namespace change ce
-nom et **invalide d'un coup toutes les passkeys enregistrées**. Rattacher un domaine personnalisé au
-conteneur (voir « Rattacher le domaine personnalisé » ci-dessous) est la seule façon de figer cette
-valeur : `rp_id` et `rp_origin` en sont alors déduits automatiquement. En
-attendant, la récupération par code email reste fonctionnelle.
-
-### Domaine d'envoi des emails
-
-**En local, aucun domaine n'est nécessaire** : `EMAIL_PROVIDER=smtp` pointe sur Mailpit, aucun compte
-ni authentification SPF/DKIM n'entre en jeu. C'est le montage décrit plus haut.
-
-Pour un envoi réel, en revanche, le fournisseur doit être configuré avec un **domaine authentifié
-(SPF/DKIM)**. Une adresse `@laposte.net` comme expéditeur serait rejetée : utilisez un domaine dont
-vous maîtrisez les enregistrements DNS. Pour Scaleway, la clé utilisée doit porter
-`TransactionalEmail` en écriture.
-
-| Fournisseur | Ce qu'il faut | Remarque |
-| --- | --- | --- |
-| `smtp` | `SMTP_HOST`, `SMTP_PORT`, `EMAIL_FROM`, éventuellement `SMTP_USER`/`SMTP_PASSWORD` | Fonctionne avec Mailpit en local, et avec les relais SMTP de Scaleway TEM ou de Brevo en production. |
-| `scaleway` | `SCW_SECRET_KEY`, `SCW_DEFAULT_PROJECT_ID`, `EMAIL_FROM` | API HTTP, même compte et même région que le conteneur et le bucket. |
-| `brevo` | `BREVO_API_KEY`, `EMAIL_FROM` | API HTTP, repli documenté. |
-
-Si `EMAIL_PROVIDER=dev` (la valeur par défaut), **aucun email n'est envoyé** : le code est écrit dans
-les journaux du serveur, sur cette ligne :
-
-```
-[docdoc][dev] code pour vous@example.com : 123456 (valable 10 min)
-```
-
-C'est la première chose à vérifier quand « le code n'arrive pas ». Le serveur annonce son mode au
-démarrage (`Envoi des codes : …`) et la page de saisie du code le répète. Un avertissement est en
-outre émis au démarrage si ce mode est actif avec `NODE_ENV=production`, ou si les identifiants du
-fournisseur configuré sont incomplets.
-
-### Le fichier `.env`
-
-L'application lit un fichier `.env` à la racine au démarrage, sans écraser les variables déjà
-présentes dans l'environnement (celles injectées par le conteneur restent prioritaires) :
-
-```bash
-cp .env.example .env
-```
-
-### Amorçage et migration des données existantes
-
-Les données écrites avant les comptes (clés `domains/`, `archive/`, `themes.json` à la racine du
-bucket) sont adoptées dans l'espace du premier compte, **une seule fois**. Pour pré-créer le compte
-hors ligne et déclencher l'adoption avant de basculer :
-
-```bash
-npm run bootstrap                      # utilise la première adresse de AUTHORIZED_EMAILS
-npm run bootstrap -- autre@example.com # ou une adresse explicite
-```
-
-La commande est idempotente : la relancer ne déplace rien deux fois. L'application effectue la même
-adoption automatiquement à la création d'un compte, si vous ne passez pas par le script.
-
-Un espace neuf **ne reçoit aucun domaine d'exemple** : il démarre vide.
-
-### Rollback
-
-1. Restaurer l'image et `main.tf` précédents (`tofu apply`), ce qui remet en service la version sans
-   contrôle d'accès.
-2. Les objets déplacés sous `users/{userId}/` restent lisibles par l'ancienne version **uniquement
-   après** les avoir remis à la racine du bucket : recopier `users/{userId}/domains/*` vers
-   `domains/*`, `users/{userId}/archive/*` vers `archive/*` et `users/{userId}/themes.json` vers
-   `themes.json`.
-3. Les passkeys enregistrées restent valides — le RP ID n'a pas changé — et redeviennent utilisables
-   au redéploiement suivant.
-
-Sauvegarder le bucket **avant** toute bascule : l'adoption déplace les clés, elle ne les copie pas.
-
-## Compilation pour démarrer localement l'application
-```bash
-pnpm start
-```
-
-## Publier une version
-
-La publication est automatique : **pousser un tag de version** déclenche le pipeline GitHub
-(`.github/workflows/release.yml`), qui construit et minifie l'image, la publie sur Docker Hub sous
-l'étiquette du tag, puis bascule le conteneur Scaleway sur cette image et vérifie la version servie.
-
-```bash
-git tag 1.10
-git push origin 1.10
-```
-
-Le tag est repris tel quel : il doit être une version numérique sans préfixe (`1.2`, `1.10`,
-`1.2.3`). Un tag `v1.10` ou `1.10-rc` est refusé au premier job, sans rien publier. Un tag publié ne
-se déplace plus : un correctif prend un nouveau numéro.
-
-### Ce que fait le pipeline
-
-| Étape | Détail |
+| Chemin | Rôle |
 | --- | --- |
-| Validation | Le tag doit correspondre à `^[0-9]+\.[0-9]+(\.[0-9]+)?$`. |
-| Build | `docker build --build-arg APP_VERSION=<tag>` : l'étape `assets` du `Dockerfile` minifie `app.js`, `auth.js`, `pwa.js` et `style.css`, et inscrit le tag dans `CACHE_VERSION` de `sw.js`. L'étape finale le conserve dans la variable d'environnement `APP_VERSION`, que la page Aide affiche. |
-| Publication | `docker.io/emmanuel7044/docdoc:<tag>`, image `linux/amd64` unique, sans tag `latest`. |
-| Déploiement | `scw container container update` sur le conteneur `docdoc-app`, puis attente du statut `ready` sur la nouvelle image (10 minutes au plus). |
-| Contrôle | Si la variable `APP_URL` est définie, `GET /sw.js` doit déclarer `CACHE_VERSION = '<tag>'` ; sinon l'étape est ignorée. |
+| `server.js` | Routes HTTP, rendu des pages et fragments htmx, démarrage. |
+| `storage.js` | Accès S3 : bucket, clés, lecture/écriture des JSON. |
+| `accounts.js`, `passkeys.js`, `authroutes.js`, `authpages.js`, `otp.js` | Comptes, WebAuthn, routes et pages d'authentification, codes à usage unique. |
+| `mailer.js` | Envoi des codes : `dev`, SMTP, Scaleway TEM, Brevo. |
+| `migration.js` | Adoption unique des données antérieures aux comptes. |
+| `env.js` | Chargement minimal de `.env`, sans dépendance. |
+| `public/` | Assets statiques, `sw.js`, manifeste PWA, `offline.html`. |
+| `data/` | Données historiques, importées une seule fois contre un bucket vide. |
+| `scripts/` | Amorçage de compte, minification des assets, icônes PWA. |
+| `test/` | Parcours d'accès (`passkey-flow.js`) et tests Playwright (`test/e2e`). |
+| `main.tf` | Infrastructure Scaleway (conteneur Serverless, bucket, IAM, DNS, emails). |
+| `docker-compose.yml`, `Dockerfile` | Développement local et image de release. |
 
-La page **Aide** affiche ce tag en bas de son manuel : c'est le moyen le plus direct de vérifier à
-l'œil quelle version répond. Le contrôle automatisé de la pipeline reste `GET /sw.js`, joignable sans
-session.
+## Documentation et procédures
 
-### Secrets et variables GitHub
+- [Déployer l'infrastructure sur Scaleway](docs/deployer-infrastructure.md) : identifiants IAM, secrets SOPS, `tofu apply`, domaine personnalisé, coûts, destruction.
+- [Publier une version](docs/publier-une-version.md) : tag git, pipeline GitHub, secrets, vérification, déploiement manuel, retour arrière.
+- [Exploitation : passkeys, données, PWA](docs/exploitation.md) : parcours d'accès, structure du bucket, configuration de référence, service worker.
 
-À déclarer dans **Settings → Secrets and variables → Actions** du dépôt.
+Quand une commande ou un réglage change dans le code, mets à jour le document qui la porte : ce README pour le développement, la procédure concernée pour le cloud.
 
-| Nom | Type | Valeur |
-| --- | --- | --- |
-| `DOCKERHUB_USERNAME` | secret | Compte Docker Hub propriétaire du dépôt `emmanuel7044/docdoc`. |
-| `DOCKERHUB_TOKEN` | secret | Jeton d'accès Docker Hub en lecture/écriture (jamais le mot de passe). |
-| `SCW_ACCESS_KEY` | secret | Clé d'accès Scaleway dédiée à la CI. |
-| `SCW_SECRET_KEY` | secret | Clé secrète associée. |
-| `SCW_DEFAULT_PROJECT_ID` | variable | Projet Scaleway qui porte le conteneur. |
-| `SCW_DEFAULT_ORGANIZATION_ID` | variable | Organisation Scaleway, déjà présente dans `secrets.sops.yaml`. `scw` l'exige même pour une commande conteneur ; à défaut, le pipeline reprend l'identifiant du projet (identique sur ce compte). |
-| `SCW_DEFAULT_REGION` | variable | `fr-par` (facultatif : c'est la valeur par défaut du pipeline). |
-| `SCW_CONTAINER_ID` | variable | Identifiant du conteneur `docdoc-app` : le seul UUID (`aa6a055f-b622-401e-9413-de4ff8d9279b` aujourd'hui), sans le préfixe `fr-par/` que montre l'état Terraform. `scw container container list` le donne. |
-| `APP_URL` | variable | URL publique (par exemple `https://docdoc.re`) ; active le contrôle de version servie. |
-
-La clé Scaleway de la CI n'a besoin que du droit de modifier le conteneur. Celle du provider OpenTofu
-(`secrets.sops.yaml`) convient, mais une clé dédiée se révoque sans casser `tofu apply`.
-
-### Déploiement manuel (sans le pipeline)
-
-Le pipeline n'est pas obligatoire : la procédure manuelle reste valable, à l'identique.
+## Assistant de codage (optionnel)
 
 ```bash
-docker build --build-arg APP_VERSION=1.11 -t emmanuel7044/docdoc:1.11 .
-docker push emmanuel7044/docdoc:1.11
+npx @deepseek-ai/dsh web
 ```
 
-Puis deux façons équivalentes de basculer le conteneur :
-
-```bash
-# 1. par OpenTofu : var.app_image est la valeur que l'apply impose
-sops exec-env secrets.sops.yaml 'tofu apply -var app_image=docker.io/emmanuel7044/docdoc:1.11'
-
-# 2. par la CLI Scaleway, sans état Terraform (même appel que le pipeline)
-scw container container update <id-du-conteneur> image=docker.io/emmanuel7044/docdoc:1.11
-```
-
-Sans `--build-arg`, la constante `CACHE_VERSION` du dépôt est conservée : c'est le comportement voulu
-en développement local, et la page Aide annonce alors « Version développement » au lieu d'un tag.
-
-> **Un seul écrivain à la fois.** `var.app_image` reste la valeur qu'OpenTofu applique. Le pipeline
-> déploie par l'API Scaleway sans modifier `main.tf` : après une release du pipeline, mets `app_image`
-> à jour (ou passe `-var app_image=…`) avant le prochain `tofu apply`, sinon l'image revient à
-> l'ancienne version. Le `plan` affiche ce changement d'image avant de l'appliquer.
-
-### Retour arrière
-
-Remettre le conteneur sur le tag précédent, sans reconstruire ni republier :
-
-```bash
-scw container container update <id-du-conteneur> image=docker.io/emmanuel7044/docdoc:<tag-précédent>
-```
-
-Le même geste se fait depuis la console Scaleway (conteneur → Image). Les images publiées restent
-disponibles sur Docker Hub ; le contrôle `/sw.js` permet de confirmer que l'ancienne version sert de
-nouveau, et la page Aide en affiche le tag.
-
-> L'image est **amd64 uniquement**.
-
-## Approvisionnement de l'infrastructure sur Scaleway (offre gratuite)
-
-`main.tf` déploie l'image Docker dans un **conteneur Serverless** Scaleway, dont l'offre gratuite
-couvre ce cas d'usage.
-
-### Le budget du free tier
-
-Le free tier Serverless Containers est de **400 000 GB/s et 200 000 vCPU/s par compte et par mois**
-([tarifs](https://www.scaleway.com/en/docs/serverless/containers/faq/)). Au palier le plus bas
-(**128 Mo / 0,07 vCPU**), une instance allumée 30 jours consomme :
-
-| Ressource | Consommation mensuelle | Plafond gratuit |
-| --- | --- | --- |
-| Mémoire (0,125 GB × 2 592 000 s) | 324 000 GB/s | 400 000 GB/s |
-| vCPU (0,07 × 2 592 000 s) | 181 440 vCPU/s | 200 000 vCPU/s |
-
-Les deux plafonds ne sont pas atteints : **le conteneur peut rester allumé en permanence sans rien
-coûter**. Au palier suivant (256 Mo / 0,14 vCPU), les deux plafonds sont dépassés (~1,90 €/mois) :
-ne pas augmenter `memory_limit` / `cpu_limit` sans vérifier la consommation du mois dans la
-[console Scaleway](https://console.scaleway.com/billing/overview).
-
-> Note : `cpu_limit` vaut 70 mVCPU par défaut. Le champ `memory_limit` est marqué déprécié par le
-> provider au profit de `memory_limit_bytes`, mais il est conservé ici car il désigne le palier sans
-> ambiguïté d'unité (le provider affiche un avertissement de dépréciation, sans impact).
-
-### Variables
-
-| Variable | Défaut | Rôle |
-| --- | --- | --- |
-| `app_image` | `docker.io/emmanuel7044/docdoc:1.11` | Image déployée sur le conteneur. Un `tofu apply` l'impose ; le pipeline de release la met à jour sans passer par OpenTofu (voir « Publier une version »). |
-| `keep_warm` | `true` | `true` = une instance reste allumée (réponse instantanée, toujours 0 €). `false` = mise à l'échelle à zéro (quelques secondes de démarrage à la première requête). |
-| `rp_id` | domaine personnalisé, sinon endpoint généré | RP ID WebAuthn : nom d'hôte sans schéma ni port. Laisser vide : la valeur est déduite de `domain_name`. Ne renseigner que pour forcer une valeur (par exemple le domaine parent quand l'application est servie sur un sous-domaine). |
-| `rp_origin` | `https://` + RP ID effectif | Origine HTTPS complète. Laisser vide : la valeur est déduite. |
-| `domain_name` | `""` | Domaine personnalisé rattaché au conteneur, ex. `docdoc.re`. Vide : l'application reste sur l'endpoint généré. Le domaine doit déjà exister dans Scaleway Domains & DNS, qui héberge sa zone. |
-| `domain_record_name` | `""` | `""` sert le domaine à la racine ; `app` ou `www` sert un sous-domaine (l'hôte final devient `app.docdoc.re`). |
-| `domain_record_type` | `ALIAS` | `ALIAS` à la racine, où un CNAME est interdit et où Scaleway DNS gère les ALIAS ; `CNAME` dès que `domain_record_name` n'est pas vide. |
-| `attach_domain` | `true` | `false` crée le seul enregistrement DNS, sans déclarer l'endpoint sur le conteneur : première étape de l'apply en deux temps. Laisser `true` le reste du temps. |
-| `authorized_emails` | `emmanuel.grandiere@laposte.net` | Adresses autorisées, séparées par des virgules. |
-| `email_provider` | `scaleway` | `scaleway` ou `brevo`. Ne jamais laisser `dev` en production. |
-| `email_from` | `""` | Expéditeur des codes, sur un **domaine authentifié SPF/DKIM**. |
-| `session_secret` | — (**obligatoire**) | Secret de signature du cookie de session. À fournir via `TF_VAR_session_secret`. |
-| `tem_secret_key` | `""` | Clé secrète IAM autorisée à envoyer via Transactional Email. |
-| `tem_project_id` | `""` | Projet Scaleway rattaché aux envois. |
-
-#### Fournir les secrets
-
-Les valeurs sans défaut ne sont pas versionnées : OpenTofu les lit dans l'environnement, sous la
-forme `TF_VAR_<nom_de_variable>`. Ce préfixe est ce qui relie la variable d'environnement à la
-variable déclarée dans `main.tf` : `TF_VAR_session_secret` alimente `variable "session_secret"`.
-
-Deux façons de les fournir : **SOPS** (recommandé — voir « SOPS : en place » plus bas) ou, à la main,
-dans `~/.bash_profile` (ci-dessous).
-
-**Le secret de session se génère une seule fois.** Le régénérer avant chaque `tofu apply` change la
-clé de signature du cookie à chaque déploiement : toutes les sessions actives sont invalidées et il
-faut se réauthentifier. Les passkeys, elles, ne sont pas touchées — elles vivent dans le bucket.
-
-Depuis un bash (Git Bash sous Windows, WSL, macOS, Linux), l'installer une fois pour toutes dans le
-fichier de démarrage du shell — donc **hors du dépôt** :
-
-```bash
-# À LANCER UNE SEULE FOIS. Le garde-fou grep rend la commande inoffensive si on la relance :
-# elle n'ajoute pas de seconde valeur et ne régénère donc jamais le secret.
-grep -q TF_VAR_session_secret ~/.bash_profile 2>/dev/null || \
-  printf '\n# docdoc : secret de session OpenTofu (généré une seule fois)\nexport TF_VAR_session_secret=%s\n' \
-    "$(openssl rand -hex 32)" >> ~/.bash_profile
-```
-
-Git Bash démarre bash en shell de *login* : il lit `/etc/profile`, puis le premier fichier existant
-parmi `~/.bash_profile`, `~/.bash_login` et `~/.profile`. Écrire dans `~/.bash_profile` garantit donc
-d'être lu, sans dépendre du fait que `~/.bashrc` soit sourcé ou non.
-
-Vérification dans un **nouveau** terminal (la longueur doit être 64) :
-
-```bash
-echo -n "$TF_VAR_session_secret" | wc -c
-```
-
-Si tu préfères ne pas toucher à ton `~/.bash_profile`, écris la ligne `export` dans un fichier hors
-dépôt (par exemple `~/.docdoc-secrets`) et fais `source ~/.docdoc-secrets` en début de session :
-c'est sans risque, la valeur étant déjà figée.
-
-Sous PowerShell (alternative), l'équivalent persistant est l'environnement utilisateur :
-
-```powershell
-# Générer une fois, puis confier la valeur à l'environnement utilisateur
-$bytes = [byte[]]::new(32)
-[System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
-$secret = -join ($bytes | ForEach-Object { $_.ToString('x2') })
-[Environment]::SetEnvironmentVariable('TF_VAR_session_secret', $secret, 'User')
-```
-
-`openssl rand -hex 32` demande 32 octets aléatoires (256 bits) et les affiche en hexadécimal ;
-`$(...)` insère le résultat dans l'affectation ; `export` rend la valeur visible par les processus
-enfants, sans quoi la commande `tofu` lancée ensuite ne la verrait pas. `export` est propre à bash :
-sous PowerShell, c'est `$env:TF_VAR_session_secret = $secret`.
-
-Pour le développement local, `.env` porte sa propre ligne `SESSION_SECRET=` (voir `.env.example`) :
-deux valeurs différentes entre local et production sont normales, ce sont deux environnements
-distincts.
-
-##### Pourquoi `.env` ne suffit pas
-
-Rien ne charge `.env` automatiquement dans ce dépôt : pas de `dotenv`, pas de `--env-file`, pas
-d'`env_file` dans `docker-compose.yml` — le fichier sert de référence pour lancer l'application à la
-main. Surtout, **OpenTofu ne lit pas `.env`** : il ne connaît que `terraform.tfvars`,
-`*.auto.tfvars`, `-var-file`, `-var` et les variables d'environnement `TF_VAR_*`. Consommer la même
-valeur des deux côtés demande donc un pont explicite :
-
-```bash
-# Pont ponctuel, si tu préfères garder .env comme source unique
-export TF_VAR_session_secret="$(sed -n 's/^SESSION_SECRET=//p' .env)"
-```
-
-##### SOPS : la mise en place, en quatre commandes
-
-Les secrets de déploiement vivent dans `secrets.sops.yaml`, **versionné mais chiffré** (SOPS + age).
-La clé privée age reste hors du dépôt ; seule la clé publique figure dans `.sops.yaml`, qui n'est pas
-un secret. Rien de tout ceci n'est automatisé : quatre commandes, à lancer une fois.
-
-```bash
-# 1. La clé age, à l'emplacement que sops cherche par défaut sous Windows.
-#    Relancer cette commande échoue (« Le fichier existe ») sans rien écraser.
-mkdir -p "$HOME/AppData/Roaming/sops/age"
-age-keygen -o "$HOME/AppData/Roaming/sops/age/keys.txt"
-#    >>> Sauvegarder ce fichier (gestionnaire de mots de passe) : sans lui,
-#    >>> les secrets chiffrés sont irrécupérables.
-
-# 2. La règle de chiffrement : quelle clé publique pour quel fichier.
-PUB="$(age-keygen -y "$HOME/AppData/Roaming/sops/age/keys.txt")"
-printf 'creation_rules:\n  - path_regex: secrets\\.sops\\.yaml$\n    age: %s\n' "$PUB" > .sops.yaml
-cat .sops.yaml          # vérifier la clé publique et le motif
-
-# 3. Le squelette, encore en clair et sans valeur réelle, puis son chiffrement.
-#    Les quatre SCW_* viennent de la console (IAM & API keys) et sont déjà dans
-#    .env : les recopier ici est ce qui permettra à sops exec-env de les injecter
-#    dans tofu. TF_VAR_session_secret, lui, ne se lit nulle part : il se génère.
-cat > secrets.sops.yaml <<'EOF'
-SCW_ACCESS_KEY: remplacer
-SCW_SECRET_KEY: remplacer
-SCW_DEFAULT_ORGANIZATION_ID: remplacer
-SCW_DEFAULT_PROJECT_ID: remplacer
-TF_VAR_session_secret: remplacer
-EOF
-sops -e -i secrets.sops.yaml
-head -1 secrets.sops.yaml     # doit afficher ENC[AES256_GCM,...
-
-# 4. Saisir les vraies valeurs : sops déchiffre dans l'éditeur et rechiffre
-#    à l'enregistrement. (EDITOR=vim, nano, ou « code --wait ».)
-EDITOR="code --wait"
-sops secrets.sops.yaml
-```
-
-##### Quelles valeurs, et d'où elles viennent
-
-| Clé | Origine | Requis |
-| --- | --- | --- |
-| `SCW_ACCESS_KEY`, `SCW_SECRET_KEY` | Console Scaleway → **IAM & API keys**. Identifiants du provider OpenTofu, lus depuis l'environnement ; déjà présents dans `.env`. | oui |
-| `SCW_DEFAULT_ORGANIZATION_ID`, `SCW_DEFAULT_PROJECT_ID` | Même écran ; rattachent les ressources au bon projet. | oui |
-| `TF_VAR_session_secret` | **À générer** : `openssl rand -hex 32`. Aucun défaut dans `main.tf`, donc obligatoire pour tout apply. | oui |
-| `TF_VAR_tem_secret_key`, `TF_VAR_tem_project_id` | Clé IAM autorisée à envoyer via Transactional Email (défaut `""` : l'application démarre sans). | non |
-| `SESSION_SECRET` | Même valeur que `TF_VAR_session_secret` ; utile seulement pour lancer l'application en local via sops. | non |
-| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | **Produits par Terraform** (`scaleway_iam_api_key.s3_credentials`) puis injectés dans le conteneur : rien à saisir. Ils ne servent qu'à faire tourner l'application locale contre le bucket Scaleway au lieu de MinIO. | non |
-
-> **Les clés API Scaleway expirent** — la politique d'organisation l'impose (cf. `expires_at` sur la
-> clé S3 dans `main.tf`). Symptôme typique : `tofu` échoue avec
-> `denied authentication: API key is expired` alors que les identifiants sont bien définis, ou avec
-> `invalid API key format or empty value` quand seul le couple organisation/projet est présent.
-> Il faut alors régénérer une clé dans **IAM & API keys** et la saisir directement dans
-> `secrets.sops.yaml`.
-
-> **`.env` ne sert pas qu'à OpenTofu.** Ce dépôt a deux fichiers `.env` en puissance : celui qui
-> existe (identifiants Scaleway du provider, décrit dans « Configuration opentofu ») et
-> `.env.example` (variables de l'application : `SESSION_SECRET`, `S3_*`, `EMAIL_*`). Copier
-> `.env.example` vers `.env`, comme ce dernier le suggère, **écraserait tes identifiants Scaleway** :
-> fusionne les deux jeux de variables dans un seul `.env`, ou renomme l'un des deux.
-
-Ensuite, `TF_VAR_session_secret` arrive par l'environnement du processus enfant : plus rien à mettre
-dans `~/.bash_profile`.
-
-```bash
-sops exec-env secrets.sops.yaml 'tofu plan'
-sops exec-env secrets.sops.yaml 'tofu apply -var domain_name=docdoc.re'
-sops exec-env secrets.sops.yaml 'pnpm start'   # exécution locale, mêmes secrets
-```
-
-Ne jamais déchiffrer vers un fichier (`sops -d secrets.sops.yaml > secrets.yaml`) : les valeurs se
-saisissent **dans** sops, et le YAML en clair ne doit jamais exister sur le disque.
-
-> **Trois pièges vérifiés sous Windows.** SOPS ne cherche pas `~/.config/sops/age/keys.txt` mais
-> `%APPDATA%\sops\age\keys.txt` : d'où le chemin de l'étape 1, qui évite de propager
-> `SOPS_AGE_KEY_FILE` — variable que PowerShell ne lirait pas dans `~/.bash_profile`. Et
-> `sops exec-env` attend la commande en **un seul argument** (`exec-env <fichier> '<commande>'`) sans
-> passer par un shell : pas de guillemets imbriqués à l'intérieur. Enfin, sops étant un binaire natif
-> Windows, un chemin POSIX (`/c/Users/...`) dans `SOPS_AGE_KEY_FILE` échoue avec « Le chemin d'accès
-> spécifié est introuvable » : MSYS convertit les arguments de commande, pas les variables
-> d'environnement.
-
-> **Ce que SOPS ne protège pas.** `terraform.tfstate` conserve les valeurs **en clair** : chiffrer la
-> source ne chiffre pas l'état. D'où `git rm --cached terraform.tfstate terraform.tfstate.backup`
-> puis `printf 'terraform.tfstate*\n' >> .gitignore` — le fichier est aujourd'hui suivi par git.
-
-> **Ordre de bascule.** Le pipeline publie l'image **avant** de basculer le conteneur : une version
-> dont l'image n'existe pas ne peut pas être déployée. À la main, l'ordre reste le même : pousser
-> l'image, puis mettre l'image du conteneur à jour (voir « Publier une version »).
-
-### Déploiement
-
-# 1. Initialiser le projet et télécharger le provider Scaleway
-```bash
-tofu init
-```
-
-# 2. Prévisualiser les modifications qui vont être appliquées
-```bash
-sops exec-env secrets.sops.yaml 'tofu plan'
-```
-
-# 3. Créer l'infrastructure sur Scaleway et démarrer le conteneur
-```bash
-sops exec-env secrets.sops.yaml 'tofu apply'
-```
-
-> **`app_image` est un champ comme un autre.** `var.app_image` pilote l'image du conteneur : un
-> `tofu apply` l'impose, c'est le chemin du déploiement manuel. Le pipeline de release met le
-> conteneur à jour par l'API Scaleway sans modifier `main.tf`, donc après une release, aligne
-> `app_image` avant de relancer un apply (voir « Déploiement manuel »).
-
-### Rattacher le domaine personnalisé (`docdoc.re`)
-
-Le domaine s'achète dans **Domains & Web Hosting → Domains and DNS** de la console Scaleway
-(**7,91 € TTC/an** pour un `.re`, prix plat création et renouvellement, zone DNS incluse). Une fois
-enregistré, sa zone DNS existe chez Scaleway et `main.tf` sait y écrire : le certificat TLS de
-l'endpoint personnalisé est, lui, émis et renouvelé gratuitement par Let's Encrypt.
-
-Scaleway impose un **ordre** : l'enregistrement DNS doit d'abord résoudre vers l'endpoint du
-conteneur, et seulement ensuite le domaine est déclaré sur le conteneur. Dans l'autre sens, le
-challenge HTTP-01 échoue après 3 minutes et l'endpoint reste en statut `error`. D'où un apply en
-deux temps :
-
-```bash
-# 1. L'enregistrement DNS seul (ALIAS à la racine, vers l'endpoint du conteneur)
-sops exec-env secrets.sops.yaml 'tofu apply -var domain_name=docdoc.re -var attach_domain=false'
-
-# 2. Vérifier que la résolution pointe bien vers le conteneur avant de continuer
-dig docdoc.re @1.1.1.1
-dig docdoc.re @8.8.8.8
-
-# 3. Déclarer l'endpoint personnalisé sur le conteneur (certificat TLS émis ici)
-sops exec-env secrets.sops.yaml 'tofu apply -var domain_name=docdoc.re'
-```
-
-`attach_domain` ne vaut `false` qu'à l'étape 1 : sa valeur par défaut (`true`) garantit qu'un apply
-ultérieur, même sans variable, ne retire jamais l'endpoint personnalisé par inadvertance. Si
-l'étape 3 rend un endpoint en statut `error`, c'est que la résolution n'était pas encore visible :
-relancer simplement `tofu apply`.
-
-`rp_id` et `rp_origin` sont alors calculés automatiquement (`docdoc.re` et `https://docdoc.re`) et
-injectés dans le conteneur : rien à saisir. Pour servir un sous-domaine plutôt que la racine :
-`-var domain_record_name=app -var domain_record_type=CNAME`, l'hôte devenant `app.docdoc.re`.
-
-> **À faire avant d'enregistrer la première passkey.** Le RP ID est figé à vie : tant que le domaine
-> n'est pas rattaché, les passkeys sont liées à l'endpoint généré, qu'une recréation du namespace
-> invaliderait. Après l'opération, les deux endpoints (généré et personnalisé) restent joignables.
-
-Retour en arrière : un apply **sans** `-var domain_name` retire l'endpoint personnalisé et
-l'enregistrement DNS. Le domaine, lui, reste enregistré et facturé.
-
-## Installer docdoc (PWA)
-
-docdoc est une **application web installable** : ouverte une fois dans un navigateur compatible, elle
-s'ajoute à l'écran d'accueil ou au bureau et s'ouvre ensuite dans sa propre fenêtre, sans barre d'URL.
-
-| Plateforme | Comment installer |
-| --- | --- |
-| Chrome / Edge (bureau, Android) | Icône d'installation de la barre d'adresse, ou **« Installer l'application »** dans le pied du panneau latéral. |
-| Safari / iOS, iPadOS | Bouton **Partager**, puis **« Sur l'écran d'accueil »**. Safari ne déclenche aucune invite native : l'application affiche la consigne à la place. |
-
-Le bouton du panneau n'apparaît que lorsqu'une installation est possible : invite native sur Chromium,
-consigne sur Safari/iOS ; il disparaît quand docdoc tourne déjà comme application installée.
-
-### Fichiers et routes
-
-| Élément | Rôle |
-| --- | --- |
-| `public/manifest.webmanifest`, servi par `GET /manifest.webmanifest` | Nom, nom court, `start_url`, portée, mode autonome, couleurs, icônes 192/512/maskable. |
-| `public/icons/*` | Icônes PNG (192, 512, maskable 512, Apple 180, favicon 32) et source SVG. |
-| `public/sw.js`, servi par `GET /sw.js` | Service worker de portée `/` : précache des actifs publics et page hors ligne. |
-| `public/pwa.js` | Enregistrement du worker, invite d'installation, bandeau de mise à jour. |
-| `public/offline.html` | Page servie quand une navigation échoue faute de réseau. |
-
-Le manifeste et `sw.js` sont servis en `Cache-Control: no-cache` : un déploiement est vu au chargement
-suivant, sans attendre l'expiration d'un cache HTTP.
-
-### Hors ligne : ce qui est mis en cache, et ce qui ne l'est pas
-
-Le service worker ne met en cache que des **actifs publics identiques pour tous** (`style.css`,
-`app.js`, `pwa.js`, htmx, icônes, manifeste) et `offline.html`. Les navigations sont toujours demandées
-au serveur ; aucun document HTML, fragment htmx ou réponse `/auth/*` / `/api/*` n'entre dans Cache
-Storage. Une coupure réseau affiche donc la page hors ligne, jamais les projets d'un compte (ni ceux
-d'un autre compte sur un poste partagé). L'outline reste en ligne : il n'y a pas d'édition hors ligne.
-
-### Modifier un actif : incrémenter `CACHE_VERSION`
-
-Après toute modification d'un fichier précaché (`style.css`, `app.js`, `pwa.js`, `auth.js`,
-`simplewebauthn.js`, `htmx.min.js`, `manifest.webmanifest`, `offline.html`, une icône), **incrémenter
-`CACHE_VERSION`** dans `public/sw.js` (`v1` → `v2`) pour une exécution depuis les sources. Sans cela,
-les navigateurs déjà équipés peuvent continuer à servir l'ancienne copie jusqu'à l'expiration ou la
-fermeture de tous les onglets. Le nouveau worker prend la main et affiche un bandeau **« Nouvelle
-version disponible »** avec un bouton **Recharger** : le rechargement n'est jamais imposé, pour ne pas
-perdre une saisie en cours.
-
-Une release n'a pas besoin de cet incrément : le build de l'image remplace `CACHE_VERSION` par le tag
-(`scripts/build-assets.js`), donc chaque version publiée part sur un cache neuf.
-
-Les icônes se régénèrent avec `pwsh -File scripts/generate-pwa-icons.ps1` (Windows, outil ponctuel :
-les PNG produits sont versionnés, rien n'est généré au démarrage).
-
-### Retirer la PWA
-
-Supprimer les balises de `pwa-head.js`, les routes `/manifest.webmanifest` et `/sw.js`, puis
-redéployer : l'application redevient un site ordinaire. Les navigateurs déjà équipés conservent le
-dernier worker (actifs statiques et page hors ligne uniquement, les navigations restant en réseau) ;
-pour effacer aussi les caches côté clients, publier un `sw.js` de retrait :
-
-```js
-self.addEventListener('install', () => self.skipWaiting());
-self.addEventListener('activate', (event) => {
-  event.waitUntil((async () => {
-    await Promise.all((await caches.keys()).map((key) => caches.delete(key)));
-    await self.registration.unregister();
-  })());
-});
-```
-
-## Test de l'application à l'adresse suivante
-https://<nom-de-votre-conteneur>-<hash-unique>.functions.fnc.fr-par.scw.cloud
-
-```bash
-tofu output app_url
-```
-
-## Destruction de l'infrastructure
-
-```bash
-sops exec-env secrets.sops.yaml 'tofu destroy'
-```
-
-> ⚠️ `terraform.tfstate` (suivi par git actuellement) contient des secrets **en clair** : clé secrète
-> S3, secret de session, clé Transactional Email. SOPS chiffre la source, pas l'état. Pour l'écarter
-> de la SCM :
-> `git rm --cached terraform.tfstate terraform.tfstate.backup` puis ajouter `terraform.tfstate*`
-> au `.gitignore`.
+Suivi de la facturation : <https://platform.deepseek.com/usage>.

@@ -23,7 +23,7 @@ const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days, sliding
 
 // Version of the running image: the release tag the pipeline passes as
 // `--build-arg APP_VERSION`, which the final Dockerfile stage exposes in the
-// environment. Empty when the app runs from the working tree (`pnpm start`, a
+// environment. Empty when the app runs from the working tree (`npm start`, a
 // plain `docker build`): the Help page then reports a development build instead
 // of inventing a number.
 const APP_VERSION = String(process.env.APP_VERSION || '').trim();
