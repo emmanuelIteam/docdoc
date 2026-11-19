@@ -1,12 +1,18 @@
 # docdoc : Gestion de projet perso
-https://docdocnamespace572c01fb-docdoc-app.functions.fnc.fr-par.scw.cloud
 https://docdoc.re
 
-## deepseek harness
+## Assistant de codage deepseek harness
 https://github.com/deepseek-ai/deepseek-harness
+
+### Lancement
+```bash
+npx @deepseek-ai/dsh web
+```
 
 ### Facturation
 https://platform.deepseek.com/usage
+
+## Prérequis
 
 ## Scaleway  
 ### Générer une Clé API Scaleway (IAM)  
@@ -63,10 +69,7 @@ pnpm start
 Le fichier `.env.example` est pré-réglé pour ce montage : `S3_ENDPOINT=http://127.0.0.1:19000`,
 `EMAIL_PROVIDER=smtp`, `SMTP_HOST=localhost`, `SMTP_PORT=1026`. Les messages sont conservés en
 mémoire par Mailpit : ils disparaissent à l'arrêt du conteneur, ce qui est le comportement voulu
-pour un catcher. Aucun compte, aucun domaine à authentifier, aucune clé à demander. http://127.0.0.1:19001
-
-#### Console d'admin MinIO : `http://127.0.0.1:19001`
-Utilisateur et mot de passe : `minioadmin`
+pour un catcher. Aucun compte, aucun domaine à authentifier, aucune clé à demander.
 
 MinIO est publié sur `19000`/`19001` et non sur `9000`/`9001` (les ports internes du conteneur
 restent `9000`/`9001`). Sur un poste Windows équipé d'un agent d'interception réseau d'entreprise
@@ -76,9 +79,34 @@ MinIO, si bien que `HeadBucket` semble réussir (« 200 Connection Established �
 données ne revient jamais. `S3_ENDPOINT` vise de plus `127.0.0.1` et non `localhost`, dont la
 résolution IPv6 (`::1`) traverse le même agent (d'où un `ECONNRESET: socket hang up` immédiat).
 
-Le service `web` (l'application dans un conteneur) est présent mais **commenté** dans
-`docker-compose.yml` : l'activer fait tout tourner dans compose, auquel cas `SMTP_HOST` doit valoir
-`mailpit` (le nom du service) et non `localhost`.
+#### Console d'admin MinIO : `http://127.0.0.1:19001`
+Utilisateur et mot de passe : `minioadmin`
+
+MinIO n'est plus distribuable sans compte : les images `minio/minio` ont été retirées de Docker Hub,
+`quay.io/minio` répond `401` sans authentification, les binaires de `dl.min.io` renvoient `410` et
+le dépôt GitHub a été archivé en avril 2026. La relève est le fork communautaire maintenu par
+Pigsty, renommé `pgsty/silo` en août 2026 : il reprend le serveur MinIO à l'identique (format de
+données `.minio.sys`, variables `MINIO_*`, routes `/minio/*`) et **restaure la console web** que
+MinIO avait retirée en mai 2025. `docker-compose.yml` épingle donc
+`pgsty/silo:RELEASE.2026-11-12T00-00-00Z` — version figée volontairement, le projet est jeune et a
+déjà changé de nom. Pour un autre serveur compatible S3 (LocalStack, SeaweedFS, Scaleway…), il
+suffit de changer `S3_ENDPOINT` et les identifiants : le code de l'application ne change pas.
+
+#### Inspecter le bucket en ligne de commande
+
+Le conteneur embarque le client du fork, livré sous le nom `mcli` avec `mc` comme alias, déjà
+configuré par la variable `MC_HOST_local` :
+
+```bash
+docker compose exec minio mc ls --recursive local/docdoc-json-storage/
+docker compose exec minio mc cat local/docdoc-json-storage/users/<id>/themes.json
+```
+
+Le service `web` (l'application dans un conteneur) est présent **non commenté** dans
+`docker-compose.yml` : un `docker compose up -d` construit donc aussi l'image `docdoc`, démarre
+l'application dans compose (port 3000, `SMTP_HOST=mailpit`) et entre en concurrence avec `pnpm start`
+sur l'hôte. Pour ne lancer que les dépendances — le montage décrit ci-dessus —, nommer les services :
+`docker compose up -d minio mailpit`.
 
 Le bucket et les données sont persistés dans le volume MinIO (`gestion-prj-perso-minio-data`). Au
 premier démarrage contre un bucket vide, l'application importe les fichiers locaux de `data/`.
