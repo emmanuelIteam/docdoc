@@ -1,8 +1,15 @@
 # docdoc
 
-Outliner de gestion de projets personnels (maison, voitures, voyages). Application Node.js + Express qui rend le HTML côté serveur, enrichie par htmx, avec les données dans un bucket compatible S3 et un accès verrouillé par passkeys.
+Outliner de gestion de projets personnels (maison, voitures, voyages). Application initialement Node.js + Express, désormais servie en production par le portage Rust : HTML rendu côté serveur, enrichi par htmx, données dans un bucket compatible S3 et accès verrouillé par passkeys.
 
 Production : <https://docdoc.re>
+
+> **Serveur de production en Rust.** L'image racine (`Dockerfile`) compile
+> [`rust/`](rust/README.md) : axum, WebAuthn natif, client S3 SigV4. Le portage
+> réutilise les mêmes assets `public/`, le même format de données et le même
+> parcours d'accès. L'implémentation Node.js reste la référence de développement
+> (débogage, tests Playwright) ; pour la version Rust, suivre `rust/README.md`.
+
 
 ## Par où commencer
 
@@ -20,9 +27,10 @@ La documentation est du Markdown versionné avec le code : pas de site séparé,
 
 | Outil | Version | Rôle |
 | --- | --- | --- |
-| Node.js | 22 ou plus | Runtime de l'application (l'image de production utilise `node:22-alpine`). |
-| npm | fourni avec Node | Installation et scripts. `pnpm` fonctionne aussi : le dépôt porte les deux lockfiles. |
-| Docker + Compose v2 | récent | MinIO (stockage S3 local) et Mailpit (boîte aux lettres locale). |
+| Node.js | 22 ou plus | Développement de l'implémentation Node de référence et étape `assets` de l'image (minification). Le serveur publié est en Rust. |
+| Rust | 1.85 ou plus | Compilation du serveur publié (`cd rust && cargo build`) ; l'image épingle Rust 1.100. |
+| npm | fourni avec Node | Installation et scripts de l'implémentation Node. `pnpm` fonctionne aussi : le dépôt porte les deux lockfiles. |
+| Docker + Compose v2 | récent | MinIO (stockage S3 local) et Mailpit (boîte aux lettres locale), et image de production. |
 | Git | — | Le dépôt. |
 | Chrome ou Edge | — | DevTools. `npm run test:e2e` pilote le Chrome installé (`channel: 'chrome'`), sans télécharger de navigateur. |
 
@@ -42,7 +50,7 @@ Sous Windows, les commandes sont données pour Git Bash. Sous PowerShell, rempla
 npm install
 ```
 
-`package-lock.json` est la référence : c'est ce que l'image de release installe avec `npm ci`. Si tu préfères pnpm, `pnpm install` utilise `pnpm-lock.yaml` ; ne mélange pas les deux gestionnaires dans un même `node_modules`.
+`package-lock.json` est la référence pour l'implémentation Node et pour l'étape `assets` de l'image, qui installe avec `npm ci` les outils de minification. Si tu préfères pnpm, `pnpm install` utilise `pnpm-lock.yaml` ; ne mélange pas les deux gestionnaires dans un même `node_modules`.
 
 ### 2. Démarrer le stockage et la boîte aux lettres
 
@@ -101,7 +109,7 @@ Projets outliner lancé sur http://localhost:3000
 
 Le bucket est créé au premier démarrage s'il n'existe pas. Contre un bucket vide, l'application importe une seule fois les fichiers historiques de `data/`.
 
-`Ctrl+C` arrête le serveur. Il n'y a **aucune étape de compilation** en développement : le HTML est rendu par le serveur et `public/` est servi tel quel. La minification n'existe que dans l'image de release.
+`Ctrl+C` arrête le serveur. Pour l'implémentation Node, il n'y a **aucune étape de compilation** en développement : le HTML est rendu par le serveur et `public/` est servi tel quel. La minification n'existe que dans l'image de release. `cargo run` recompile le serveur Rust.
 
 ## Première connexion
 
@@ -200,14 +208,14 @@ Journaux des dépendances : `docker compose logs -f minio mailpit`.
 
 ## Variante : tout dans Docker
 
-Pour lancer l'application elle-même dans Compose (elle est alors configurée avec `S3_ENDPOINT=http://minio:9000` et `SMTP_HOST=mailpit`) :
+Pour lancer l'application elle-même dans Compose (elle est alors configurée avec `S3_ENDPOINT=http://minio:9000` et `SMTP_HOST=mailpit`), l'image racine compile le serveur Rust :
 
 ```bash
 docker compose up -d --build
 docker compose logs -f web
 ```
 
-L'application répond sur <http://localhost:3000>. Arrêter d'abord `npm start` : les deux se disputent le port. `NODE_ENV` reste `development` dans Compose, ce qui est voulu sur `http://localhost` (cookie non `Secure`, RP déduit).
+L'application répond sur <http://localhost:3000>. Arrêter d'abord `npm start` ou `cargo run` : les processus se disputent le port. `NODE_ENV` reste `development` dans Compose, ce qui est voulu sur `http://localhost` (cookie non `Secure`, RP déduit).
 
 ## Ports et services
 
@@ -247,8 +255,9 @@ L'application répond sur <http://localhost:3000>. Arrêter d'abord `npm start` 
 | `data/` | Données historiques, importées une seule fois contre un bucket vide. |
 | `scripts/` | Amorçage de compte, minification des assets, icônes PWA. |
 | `test/` | Parcours d'accès (`passkey-flow.js`) et tests Playwright (`test/e2e`). |
+| `rust/` | Portage Rust : serveur axum, tests, scripts de validation manuels (`rust/test/manual`). |
 | `main.tf` | Infrastructure Scaleway (conteneur Serverless, bucket, IAM, DNS, emails). |
-| `docker-compose.yml`, `Dockerfile` | Développement local et image de release. |
+| `docker-compose.yml`, `Dockerfile` | Développement local et image de production (Rust + étape assets). |
 
 ## Documentation et procédures
 

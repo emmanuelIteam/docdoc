@@ -7,3 +7,12 @@ playwright-report/
 blob-report/
 # Déchiffrement accidentel des secrets SOPS (seul secrets.sops.yaml, chiffré, se versionne)
 secrets.yaml
+# Portage Rust : toolchain locale (sandbox), artefacts et outils de test
+/.cargo/
+/.rustup/
+/.tooling/
+/rust/target/
+/rust/test/manual/dev-codes.txt
+/rust/test/manual/passkey-state.json
+/rust/test/manual/edge-profile/
+/rust/test/manual/*.png

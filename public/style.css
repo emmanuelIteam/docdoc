@@ -129,6 +129,52 @@ body.sidebar-ready .sidebar {
 .sidebar-link.active { background: #eef2ff; color: var(--accent-dark); font-weight: 600; }
 .sidebar-empty { color: var(--done); font-size: .85rem; padding: .25rem .5rem; }
 
+/* A domain row pairs the navigation link with its two reorder controls. The
+   controls keep their width while hidden, so revealing them never shifts the
+   list; a device without hover shows them permanently. */
+.sidebar-domain {
+  display: flex;
+  align-items: center;
+  gap: .1rem;
+}
+.sidebar-domain > .sidebar-link {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.sidebar-order {
+  display: inline-flex;
+  gap: .1rem;
+  flex: 0 0 auto;
+  opacity: 0;
+  pointer-events: none;
+}
+.sidebar-domain:hover .sidebar-order,
+.sidebar-domain:focus-within .sidebar-order {
+  opacity: 1;
+  pointer-events: auto;
+}
+@media (hover: none) {
+  .sidebar-order {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+.sidebar-domain .sidebar-move-btn {
+  width: 1.5rem;
+  height: 1.5rem;
+  font-size: .75rem;
+  color: var(--done);
+}
+.sidebar-domain .sidebar-move-btn:hover:not(:disabled) {
+  background: #e4e4e7;
+  color: #18181b;
+}
+.sidebar-domain .sidebar-move-btn:disabled {
+  opacity: .35;
+  cursor: default;
+  background: transparent;
+}
+
 /* Never compressed by a long domain list: the list is the part that gives way
    (see `min-height: 0` on `.sidebar-nav`). */
 .sidebar-footer {
@@ -320,43 +366,256 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
 .empty-state p { color: var(--done); }
 
 /* ------------------------------------------------------------------ */
-/* Home page: the in-progress leaf tasks of every domain               */
+/* Home page: the three GTD rubriques                                  */
 /*                                                                     */
-/* One full-width link per leaf task, stacked on two lines at every     */
-/* width: the title (never truncated), then the domain badge followed   */
-/* by the chain of parent tasks, which wraps instead of being cut.     */
+/* Three columns on a wide screen, stacked on a narrow one. A card is  */
+/* a draggable tile: a grip, the deep link of the title, the domain    */
+/* badge and parent chain, then a rubrique menu for keyboard users.    */
 /* ------------------------------------------------------------------ */
 
-.home-tasks {
+.gtd-board {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: .85rem;
+  align-items: start;
+  max-width: 72rem;
+}
+.gtd-column {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  padding: .55rem;
+  background: #f4f4f5;
+  border: 1px solid var(--border);
+  border-radius: .65rem;
+  transition: background .12s ease, box-shadow .12s ease;
+}
+.gtd-column-head h2 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .5rem;
+  margin: 0;
+  font-size: .95rem;
+}
+.gtd-count {
+  flex: 0 0 auto;
+  min-width: 1.4rem;
+  padding: .05rem .4rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--card);
+  color: #52525b;
+  font-size: .72rem;
+  font-weight: 600;
+  text-align: center;
+}
+.gtd-list {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: .35rem;
-  max-width: 48rem;
+  gap: .4rem;
+  min-height: 2.2rem;
 }
-.home-task {
+.gtd-empty {
+  margin: 0;
+  padding: .9rem .4rem;
+  color: var(--done);
+  font-size: .82rem;
+  text-align: center;
+}
+.gtd-card {
+  position: relative;
   display: flex;
-  flex-direction: column;
   align-items: flex-start;
-  gap: .2rem;
-  padding: .55rem .75rem;
+  gap: .35rem;
+  min-width: 0;
+  padding: .5rem .45rem;
+  background: var(--card);
   border: 1px solid var(--border);
   border-radius: .5rem;
-  background: var(--card);
+}
+.gtd-card:hover,
+.gtd-card:focus-within { border-color: var(--accent); }
+.gtd-card.dragging { opacity: .5; }
+.gtd-card.gtd-touch-pending { opacity: .75; }
+.gtd-card-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: .2rem;
+  min-width: 0;
+  padding-right: 1.55rem;
+}
+.gtd-card-title {
   color: #18181b;
+  font-weight: 500;
+  overflow-wrap: anywhere;
   text-decoration: none;
 }
-.home-task:hover { border-color: var(--accent); }
-.home-task:focus-visible {
+.gtd-card-title:hover { text-decoration: underline; }
+.gtd-card-title:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+  border-radius: 2px;
 }
-.home-task-title {
-  min-width: 0;
-  overflow-wrap: anywhere;
+.gtd-grip {
+  flex: 0 0 auto;
+  width: 1.5rem;
+  height: 1.5rem;
+  padding: 0;
+  border: none;
+  border-radius: .3rem;
+  background: transparent;
+  color: #a1a1aa;
+  cursor: grab;
+  font-size: .95rem;
+  line-height: 1;
+  touch-action: none;
 }
+.gtd-grip:hover,
+.gtd-grip:focus-visible { background: #f4f4f5; color: var(--accent-dark); }
+.gtd-grip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.gtd-grip:active { cursor: grabbing; }
+.gtd-badge {
+  align-self: flex-start;
+  padding: .05rem .35rem;
+  border-radius: .3rem;
+  background: #eef2ff;
+  color: var(--accent-dark);
+  font-size: .68rem;
+  font-weight: 600;
+}
+.gtd-move {
+  position: absolute;
+  top: .3rem;
+  right: .3rem;
+}
+.gtd-move-summary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: .3rem;
+  color: #71717a;
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  list-style: none;
+}
+.gtd-move-summary::-webkit-details-marker { display: none; }
+.gtd-move-summary:hover,
+.gtd-move[open] .gtd-move-summary {
+  background: #eef2ff;
+  color: var(--accent-dark);
+}
+.gtd-move-summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.gtd-move-menu {
+  position: absolute;
+  top: calc(100% + .25rem);
+  right: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  min-width: 11rem;
+  padding: .25rem;
+  background: var(--card);
+  border: 1px solid #c9ced6;
+  border-radius: .45rem;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, .24);
+}
+.gtd-move-label {
+  padding: .2rem .45rem;
+  color: var(--done);
+  font-size: .68rem;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+}
+.gtd-move-item {
+  padding: .4rem .5rem;
+  border: none;
+  border-radius: .3rem;
+  background: transparent;
+  color: #18181b;
+  cursor: pointer;
+  font: inherit;
+  font-size: .85rem;
+  text-align: left;
+}
+.gtd-move-item:hover:not(:disabled) { background: #f4f4f5; }
+.gtd-move-item.current {
+  background: #fafafa;
+  color: var(--done);
+  cursor: default;
+}
+.gtd-column.gtd-drop-target {
+  background: #eef2ff;
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+.gtd-column.gtd-drop-invalid { background: #fef2f2; }
+.gtd-drag-ghost {
+  position: fixed;
+  top: 0;
+  left: -10000px;
+  z-index: 60;
+  width: 18rem;
+  max-width: 80vw;
+  padding: .35rem;
+  overflow: hidden;
+  pointer-events: none;
+  background: var(--card);
+  border: 1px solid var(--accent);
+  border-radius: .5rem;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, .25);
+}
+.gtd-drag-ghost .gtd-card {
+  border: none;
+  box-shadow: none;
+}
+.gtd-touch-ghost {
+  position: fixed;
+  z-index: 60;
+  max-width: 80vw;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: .95;
+  background: var(--card);
+  border: 1px solid var(--accent);
+  border-radius: .5rem;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, .25);
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* The in-progress title keeps its bold, but the two new GTD statuses also
+   need a non-colour cue: a dotted or double underline, always visible. */
+.title.status-waiting {
+  color: #a16207;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+.title.status-someday {
+  color: #7c3aed;
+  text-decoration: underline double;
+  text-underline-offset: 2px;
+}
+
 .home-task-context {
   display: flex;
   flex-wrap: wrap;
@@ -389,11 +648,21 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
   overflow-wrap: anywhere;
 }
 
+@media (max-width: 900px) {
+  .gtd-board { grid-template-columns: 1fr; }
+}
 @media (max-width: 640px) {
   .home-task-domain {
     white-space: normal;
     overflow-wrap: anywhere;
   }
+}
+
+/* The line menu gained two statuses; let it wrap instead of overflowing a
+   narrow screen or a deeply indented line. */
+.menu {
+  flex-wrap: wrap;
+  max-width: calc(100vw - 2rem);
 }
 
 /* Outline
@@ -588,10 +857,10 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
 /* Title formatting */
 .title { cursor: text; line-height: 1.25; }
 .title.status-in-progress { font-weight: 700; }
-.title.status-done { font-style: italic; color: var(--done); text-decoration: line-through; }
+.title.status-done { font-style: italic; color: var(--done); }
 
 /* Inline task link inside a title. The link keeps the title's status styling:
-   a done line keeps the muted colour and the strike-through. */
+   a done line keeps the muted colour and the italic. */
 .title-link {
   color: var(--accent-dark);
   text-decoration: underline;
@@ -787,13 +1056,7 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
 .color-field { display: inline-flex; align-items: center; gap: .4rem; font-size: .85rem; color: var(--done); }
 .color-field input[type="color"] { width: 2.4rem; height: 1.9rem; padding: 0; border: 1px solid var(--border); border-radius: .4rem; background: var(--card); }
 
-.theme-group { margin-bottom: .35rem; }
-.theme-group-header { display: flex; align-items: center; gap: .35rem; padding: .25rem .5rem; border-radius: .4rem; }
-.theme-group-header:hover { background: #f4f4f5; }
 .theme-dot { width: .8rem; height: .8rem; border-radius: 50%; flex: 0 0 auto; display: inline-block; }
-.theme-group-name { font-weight: 600; font-size: .9rem; }
-.theme-group-domains { margin-left: .3rem; padding-left: .9rem; border-left: 2px solid var(--border); display: flex; flex-direction: column; gap: .1rem; }
-.sidebar-muted { color: var(--done); font-size: .8rem; padding: .1rem .5rem; }
 
 .btn-mini {
   border: none;
@@ -1084,6 +1347,35 @@ body.has-labels-bar main {
 
 .admin-archives summary { cursor: pointer; font-weight: 600; }
 .admin-archives[open] summary { margin-bottom: .75rem; }
+
+/* Backup section: export link, restore form, success and error messages. */
+.admin-backup-export { margin: .75rem 0; }
+.admin-restore {
+  border: 1px solid var(--border);
+  border-radius: .5rem;
+  padding: .6rem .75rem;
+  background: var(--card);
+}
+.admin-restore summary { cursor: pointer; font-weight: 600; }
+.admin-restore form { display: flex; flex-direction: column; gap: .6rem; margin-top: .8rem; }
+.admin-restore form label { font-size: .9rem; }
+.admin-restore input[type="file"] { max-width: 100%; font: inherit; }
+.restore-confirm { display: flex; align-items: flex-start; gap: .5rem; color: var(--done); }
+.restore-confirm input { margin-top: .15rem; flex: 0 0 auto; }
+.admin-notice {
+  margin: .5rem 0 .75rem;
+  padding: .5rem .75rem;
+  border: 1px solid #86efac;
+  border-radius: .5rem;
+  background: #f0fdf4;
+  color: #166534;
+  font-size: .9rem;
+}
+#restore-status { margin: 0; min-height: 1.2em; font-size: .9rem; }
+#restore-status[role="alert"] { color: #b91c1c; }
+@media (max-width: 640px) {
+  .admin-restore form .btn { width: 100%; }
+}
 
 .admin-move[disabled],
 .btn-mini[disabled] { opacity: .3; cursor: default; }

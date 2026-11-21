@@ -183,6 +183,11 @@ const collapsedKey = (page) => page.evaluate(() => localStorage.getItem('sidebar
 
 const domainLink = (page, slug) => page.locator(`#sidebar-nav a.sidebar-link[href="/domaine/${slug}"]`);
 
+const sidebarDomainRow = (page, slug) =>
+  page
+    .locator('#sidebar-nav .sidebar-domain')
+    .filter({ has: page.locator(`a.sidebar-link[href="/domaine/${slug}"]`) });
+
 test.beforeAll(async ({ browser }) => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docdoc-sidebar-e2e-'));
   logFile = path.join(dataDir, 'server.log');
@@ -416,6 +421,80 @@ test('1.6 avec une liste courte, le bloc bas repose au bas de l’écran', async
   expect(box.footerTop).toBeGreaterThan(0);
   expect(box.navBottom).toBeLessThanOrEqual(box.footerTop);
   expect(atScreenBottom(box)).toBe(true);
+
+  await context.close();
+});
+
+/* ------------------------------------------------------------------ */
+/* 1.6b Reorder domains from the panel                                 */
+/* ------------------------------------------------------------------ */
+
+test('1.6b le panneau classe les domaines et partage l’ordre avec l’administration', async ({ browser }) => {
+  const { context, page } = await signedInPage(browser, { viewport: { width: 1280, height: 720 } });
+
+  await page.goto('/domaine/e2e');
+  const first = sidebarDomainRow(page, 'e2e');
+  const second = sidebarDomainRow(page, 'e2e2');
+
+  // Flat list: one link per domain, no theme group.
+  await expect(page.locator('#sidebar-nav .sidebar-link')).toHaveText(['E2E', 'E2E 2']);
+  await expect(page.locator('#sidebar .theme-group')).toHaveCount(0);
+
+  // The ends of the list are not movable.
+  await expect(first.locator('button[title^="Monter"]')).toBeDisabled();
+  await expect(first.locator('button[title^="Descendre"]')).toBeEnabled();
+  await expect(second.locator('button[title^="Descendre"]')).toBeDisabled();
+
+  // The controls stay out of the way until the row is hovered.
+  await expect(first.locator('.sidebar-order')).toHaveCSS('opacity', '0');
+  await first.hover();
+  await expect(first.locator('.sidebar-order')).toHaveCSS('opacity', '1');
+
+  await first.locator('button[title^="Descendre"]').click();
+  await expect(page.locator('#sidebar-nav .sidebar-link')).toHaveText(['E2E 2', 'E2E']);
+  // The moved active domain is still the highlighted one.
+  await expect(domainLink(page, 'e2e')).toHaveClass(/active/);
+  // The move returns to the page it was submitted from, not to Administration.
+  expect(new URL(page.url()).pathname).toBe('/domaine/e2e');
+
+  // Administration reads the same order.
+  await page.goto('/administration');
+  await expect(page.locator('#admin-domains-table tbody tr').nth(0)).toContainText('/domaine/e2e2');
+  await expect(page.locator('#sidebar-nav .sidebar-link')).toHaveText(['E2E 2', 'E2E']);
+
+  // Restore the fixture order for the scenarios that follow.
+  await page.goto('/domaine/e2e');
+  const moved = sidebarDomainRow(page, 'e2e');
+  await moved.hover();
+  await moved.locator('button[title^="Monter"]').click();
+  await expect(page.locator('#sidebar-nav .sidebar-link')).toHaveText(['E2E', 'E2E 2']);
+  expect(new URL(page.url()).pathname).toBe('/domaine/e2e');
+
+  await context.close();
+});
+
+test('1.6c sur un smartphone, classer un domaine laisse le panneau ouvert', async ({ browser }) => {
+  const { context, page } = await signedInPage(browser, {
+    viewport: PHONE,
+    hasTouch: true,
+    isMobile: true,
+  });
+
+  await page.goto('/domaine/e2e');
+  await expect(page.locator('body')).not.toHaveClass(/sidebar-collapsed/);
+
+  // Without hover, the controls are permanently visible.
+  const row = sidebarDomainRow(page, 'e2e');
+  await expect(row.locator('.sidebar-order')).toHaveCSS('opacity', '1');
+  await row.locator('button[title^="Descendre"]').click();
+  await expect(page.locator('#sidebar-nav .sidebar-link')).toHaveText(['E2E 2', 'E2E']);
+  // A button is not a navigation link: the panel stays open on the phone.
+  await expect(page.locator('body')).not.toHaveClass(/sidebar-collapsed/);
+
+  // Restore the fixture order.
+  await sidebarDomainRow(page, 'e2e').locator('button[title^="Monter"]').click();
+  await expect(page.locator('#sidebar-nav .sidebar-link')).toHaveText(['E2E', 'E2E 2']);
+  await expect(page.locator('body')).not.toHaveClass(/sidebar-collapsed/);
 
   await context.close();
 });

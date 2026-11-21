@@ -1,7 +1,7 @@
 # space-administration Specification
 
 ## Purpose
-The single administration page of a space: owner-only access, its entry in the sidebar footer, the three sections it renders (themes, domains, archives), and the return-to-page behaviour of the mutations submitted from it.
+The single administration page of a space: owner-only access, its entry in the sidebar footer, the sections it renders (themes, domains, archives, backup), and the return-to-page behaviour of the mutations submitted from it.
 
 ## Requirements
 ### Requirement: Serve the administration page to the space owner
@@ -42,24 +42,29 @@ The system SHALL display an "Administration" entry in the footer of the left sid
 - **WHEN** a domain page is displayed
 - **THEN** the Administration entry is not highlighted
 
-### Requirement: Organize the page in three sections
+### Requirement: Organize the page in three sections and a backup section
 
-The system SHALL render the administration page as three stacked sections — themes, domains, and archives — with the archives section collapsed by default, and SHALL show an explicit empty state in each section that has no entry.
+Le système SHALL rendre la page d'administration en trois sections de gestion empilées — thèmes, domaines et archives — suivies d'une section Sauvegarde, avec la section des archives repliée par défaut, et SHALL afficher un état vide explicite dans chacune des trois sections de gestion qui n'a aucune entrée. La section Sauvegarde SHALL rester déployée et SHALL contenir le lien d'export et le formulaire de restauration décrits par la capacité `data-backup`.
 
 #### Scenario: Three sections are displayed
 
-- **WHEN** the administration page is rendered
-- **THEN** the themes, domains, and archives sections appear in that order
+- **WHEN** la page d'administration est rendue
+- **THEN** les sections thèmes, domaines et archives apparaissent dans cet ordre
 
 #### Scenario: Archives start collapsed
 
-- **WHEN** the administration page is loaded
-- **THEN** the archives section is collapsed and expanding it lists the archived domains
+- **WHEN** la page d'administration est chargée
+- **THEN** la section des archives est repliée et son dépliage liste les domaines archivés
+
+#### Scenario: The backup section follows the archives
+
+- **WHEN** la page d'administration est rendue
+- **THEN** la section Sauvegarde suit immédiatement la section Archives
 
 #### Scenario: The page works with an empty space
 
-- **WHEN** the space holds no theme, no domain, and no archive
-- **THEN** each of the three sections shows its empty state, the page renders, and no redirect to a domain occurs
+- **WHEN** l'espace ne contient ni thème, ni domaine, ni archive
+- **THEN** chacune des trois sections de gestion affiche son état vide, la section Sauvegarde reste utilisable et aucune redirection vers un domaine n'a lieu
 
 ### Requirement: Return to the administration page after a mutation
 

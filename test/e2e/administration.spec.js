@@ -220,7 +220,7 @@ test('6.0 la page Aide est accessible depuis le pied du panneau, avant tout doma
   const guide = page.locator('.guide');
   await expect(guide).toBeVisible();
   await expect(page.locator('.guide-section h2')).toHaveText([
-    'Retrouver les tâches en cours',
+    'Classer les tâches par rubrique GTD',
     'Garder le fil de la hiérarchie',
     'Sélectionner une ligne et ouvrir son menu',
     'Replier ou déplier une ligne',
@@ -230,13 +230,17 @@ test('6.0 la page Aide est accessible depuis le pied du panneau, avant tout doma
     'Lier des tâches',
     'Indenter et désindenter une ligne',
     'Rattacher un thème',
+    'Classer les domaines',
     'Gérer les thèmes et les domaines',
+    'Sauvegarder et restaurer ses données',
   ]);
   await expect(guide).toContainText('chaîne des tâches mères');
   await expect(guide).toContainText('MAJ+Tab');
   await expect(guide).toContainText('poignée');
   await expect(guide).toContainText('lien nommé');
-  await expect(guide.locator('a[href="/administration"]')).toHaveCount(1);
+  await expect(guide).toContainText('deux flèches');
+  await expect(guide).toContainText('ne regroupent plus');
+  await expect(guide.locator('a[href="/administration"]')).toHaveCount(2);
 
   // On a narrow screen the manual wraps instead of truncating or scrolling
   // sideways.
@@ -282,28 +286,29 @@ test('6.1 créer, renommer, colorer, réordonner, étiqueter, archiver, restaure
   await themeForm.locator('input[name="color"]').fill('#e11d48');
   await themeForm.locator('button[type="submit"]').click();
   await expect(page.locator('.admin-list .admin-row')).toHaveCount(1);
-  await expect(page.locator('#sidebar .theme-group-name').first()).toHaveText('Maison');
+  // Themes are labels: they no longer appear as sidebar group headers.
+  await expect(page.locator('#sidebar .theme-group')).toHaveCount(0);
+  await expect(page.locator('#sidebar')).not.toContainText('Maison');
 
   await themeForm.locator('input[name="name"]').fill('Travail');
   await themeForm.locator('input[name="color"]').fill('#2563eb');
   await themeForm.locator('button[type="submit"]').click();
   await expect(page.locator('.admin-list .admin-row')).toHaveCount(2);
 
-  // Change the color of the first theme: the sidebar dot follows.
+  // Change the color of the first theme: the palette row follows, the sidebar
+  // has no theme dot to update.
   const firstThemeRow = page.locator('.admin-list .admin-row').nth(0);
   await firstThemeRow.locator('input[name="color"]').fill('#008000');
   await firstThemeRow.locator('button[title="Enregistrer le nom et la couleur"]').click();
-  await expect(page.locator('#sidebar .theme-group-header .theme-dot').first()).toHaveAttribute(
-    'style',
-    /#008000/i
-  );
+  await expect(firstThemeRow.locator('input[name="color"]')).toHaveValue('#008000');
+  await expect(page.locator('#sidebar .theme-dot')).toHaveCount(0);
 
-  // Reorder the themes: Maison moves below Travail.
+  // Reorder the themes: Maison moves below Travail. The sidebar stays flat.
   await firstThemeRow.locator('button[title="Descendre"]').click();
   await expect(page.locator('.admin-list .admin-row').nth(0).locator('input[name="name"]')).toHaveValue(
     'Travail'
   );
-  await expect(page.locator('#sidebar .theme-group-name').nth(0)).toHaveText('Travail');
+  await expect(page.locator('#sidebar .theme-group')).toHaveCount(0);
 
   // Create two domains.
   const domainForm = page.locator('#admin-domains .admin-create');
@@ -314,27 +319,28 @@ test('6.1 créer, renommer, colorer, réordonner, étiqueter, archiver, restaure
   await expect(page.locator('#admin-domains-table tbody tr')).toHaveCount(2);
   await expect(domainRow(page, 'alpha')).toHaveCount(1);
   await expect(domainRow(page, 'beta')).toHaveCount(1);
-  await expect(page.locator('#sidebar-nav .sidebar-link').first()).toHaveText('Alpha');
+  await expect(page.locator('#sidebar-nav .sidebar-link')).toHaveText(['Alpha', 'Beta']);
 
   // Reorder the domains: Beta first, in the table and in the sidebar.
   await domainRow(page, 'beta').locator('button[title="Monter"]').click();
   await expect(page.locator('#admin-domains-table tbody tr').nth(0)).toContainText('/domaine/beta');
-  await expect(page.locator('#sidebar-nav .sidebar-link').first()).toHaveText('Beta');
+  await expect(page.locator('#sidebar-nav .sidebar-link')).toHaveText(['Beta', 'Alpha']);
 
   // The matrix attaches Travail (first row) to Beta (first column, after the
-  // reorder). The sidebar regroups the domain under that theme.
+  // reorder). The domain keeps a single sidebar entry: labels do not regroup.
   const matrixCell = page.locator('.matrix tbody tr').nth(0).locator('td').nth(0).locator('.matrix-toggle');
   await expect(matrixCell).toHaveAttribute('aria-pressed', 'false');
   await matrixCell.click();
   await expect(matrixCell).toHaveAttribute('aria-pressed', 'true');
-  const travailGroup = page.locator('#sidebar .theme-group').filter({ hasText: 'Travail' }).first();
-  await expect(travailGroup.locator('.sidebar-link')).toHaveText(['Beta']);
+  await expect(page.locator('#sidebar-nav .sidebar-link')).toHaveText(['Beta', 'Alpha']);
+  await expect(domainRow(page, 'beta').locator('.theme-chips')).toContainText('Travail');
+  await expect(page.locator('#sidebar .theme-group')).toHaveCount(0);
 
-  // Toggling the cell again detaches the theme.
+  // Toggling the cell again detaches the theme; the flat list is unchanged.
   await matrixCell.click();
   await expect(matrixCell).toHaveAttribute('aria-pressed', 'false');
-  const untagged = page.locator('#sidebar .theme-group').filter({ hasText: 'Sans thème' });
-  await expect(untagged.locator('.sidebar-link')).toHaveText(['Beta', 'Alpha']);
+  await expect(page.locator('#sidebar-nav .sidebar-link')).toHaveText(['Beta', 'Alpha']);
+  await expect(domainRow(page, 'beta').locator('.theme-chips')).toContainText('Aucun');
 
   // Archive Alpha: it leaves the sidebar and appears in the collapsed archives.
   await domainRow(page, 'alpha').locator('button[title="Archiver"]').click();
@@ -395,11 +401,12 @@ test('6.1 créer, renommer, colorer, réordonner, étiqueter, archiver, restaure
     .click();
   await expect(page.locator('.admin-archives .admin-empty')).toContainText('Aucun domaine archivé');
 
-  // Delete a theme from the page: the palette and the sidebar lose it, and its
-  // label is pruned from every domain (none carries it at this point).
+  // Delete a theme from the page: the palette loses it, and its label is pruned
+  // from every domain (none carries it at this point). The sidebar stays flat.
   await page.locator('.admin-list .admin-row').nth(1).locator('button[title="Supprimer"]').click();
   await expect(page.locator('input.theme-name-input')).toHaveCount(1);
-  await expect(page.locator('#sidebar .theme-group-name')).toHaveText(['Travail', 'Sans thème']);
+  await expect(page.locator('#sidebar .theme-group')).toHaveCount(0);
+  await expect(page.locator('#sidebar')).not.toContainText('Travail');
 
   await context.close();
 });
@@ -421,10 +428,16 @@ test('6.2 le panneau et la page domaine n’offrent plus de contrôles de gestio
 
   await expect(page.locator('#sidebar')).toBeVisible();
   const sidebar = page.locator('#sidebar');
-  await expect(sidebar.locator('input, select, textarea')).toHaveCount(0);
+  // The only controls the panel offers are the reorder forms of its rows: no
+  // visible field and no theme or domain management.
+  await expect(sidebar.locator('input:not([type="hidden"]), select, textarea')).toHaveCount(0);
   await expect(sidebar.locator('#new-theme-btn, #new-theme-form, #new-domain-btn, #new-domain-form')).toHaveCount(0);
   await expect(sidebar.locator('form[action^="/api/themes"]')).toHaveCount(0);
-  await expect(sidebar.locator('button[title="Renommer"], button[title="Supprimer"]')).toHaveCount(0);
+  await expect(
+    sidebar.locator('button[title="Renommer"], button[title="Supprimer"], button[title="Archiver"]')
+  ).toHaveCount(0);
+  await expect(sidebar.locator('.sidebar-domain').first().locator('.sidebar-move-btn')).toHaveCount(2);
+  await expect(sidebar.locator('.theme-group')).toHaveCount(0);
   await expect(sidebar.locator('a.sidebar-admin')).toHaveCount(1);
   await expect(sidebar.locator('a.sidebar-help')).toHaveCount(1);
   // The documentation footer is gone, and Aide is not active here.
@@ -556,6 +569,8 @@ test('6.7 la barre d’étiquettes met à jour la barre et le panneau sans recha
   await page.evaluate(() => {
     window.__noReloadMarker = 'kept';
   });
+  const sidebarLinks = () => page.locator('#sidebar-nav .sidebar-link').allTextContents();
+  const before = await sidebarLinks();
 
   await page.click('#label-add-btn');
   const picker = page.locator('#label-attach-form');
@@ -565,15 +580,16 @@ test('6.7 la barre d’étiquettes met à jour la barre et le panneau sans recha
 
   await expect(page.locator('#labels-bar .label-chip-name')).toHaveText(['Barre']);
   expect(await page.evaluate(() => window.__noReloadMarker)).toBe('kept');
-  const group = page.locator('#sidebar .theme-group').filter({ hasText: 'Barre' }).first();
-  await expect(group.locator('.sidebar-link')).toHaveText(['Étiquette']);
+  // The sidebar is a flat domain list: attaching a label changes nothing there.
+  expect(await sidebarLinks()).toEqual(before);
+  await expect(page.locator('#sidebar .theme-group')).toHaveCount(0);
 
-  // Detach: the chip goes, the sidebar falls back to "Sans thème", still in place.
+  // Detach: the chip goes and the flat sidebar list stays exactly the same.
   await page.locator('#labels-bar .label-chip-x').click();
   await expect(page.locator('#labels-bar .label-chip-name')).toHaveCount(0);
   expect(await page.evaluate(() => window.__noReloadMarker)).toBe('kept');
-  const untagged = page.locator('#sidebar .theme-group').filter({ hasText: 'Sans thème' });
-  await expect(untagged.locator('.sidebar-link', { hasText: 'Étiquette' })).toHaveCount(1);
+  expect(await sidebarLinks()).toEqual(before);
+  await expect(page.locator('#sidebar .theme-group')).toHaveCount(0);
 
   await context.close();
 });

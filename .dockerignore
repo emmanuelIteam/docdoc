@@ -1,12 +1,29 @@
-# Keep the build context small and prevent host files from leaking into the image.
-# Runtime files only: package.json, package-lock.json, server.js, public/
+# Keep the build context small and prevent host files from leaking into the
+# image. The image now builds the Rust server (`rust/`) plus the minified
+# public/ assets; Node is only present in the temporary asset stage.
 
 node_modules/
 .npm-cache/
+.pnpm-store/
 data/
 .git/
 .github/
 openspec/
+.cargo/
+.rustup/
+.tooling/
+rust/target/
+rust/test/
+rust/*.png
+terraform.tfstate
+terraform.tfstate.backup
+.env
+secrets.yaml
+secrets.sops.yaml
+.terraform/
+*.tfstate
+*.tfstate.*
+*.md
 
 # Docs and metadata (not needed at runtime)
 **/*.md

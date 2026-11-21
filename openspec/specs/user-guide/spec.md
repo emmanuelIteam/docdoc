@@ -126,7 +126,7 @@ Le système SHALL documenter dans la page « Aide » les interactions prises en 
 
 ### Requirement: Present the guide as readable sections
 
-Le système SHALL présenter la documentation de la page « Aide » en sections titrées — au moins la sélection et le menu, le repli, le déplacement, le renommage, l'ajout d'une sous-tâche, les liens de tâche, l'indentation, les étiquettes et l'administration — plutôt qu'en un paragraphe unique. Le contenu SHALL rester lisible sans JavaScript et SHALL ne rien tronquer.
+Le système SHALL présenter la documentation de la page « Aide » en sections titrées — au moins la sélection et le menu, le repli, le déplacement, le renommage, l'ajout d'une sous-tâche, les liens de tâche, l'indentation, les étiquettes, les rubriques GTD de l'accueil et l'administration — plutôt qu'en un paragraphe unique. Le contenu SHALL rester lisible sans JavaScript et SHALL ne rien tronquer.
 
 #### Scenario: Each topic has its own title
 
@@ -142,6 +142,11 @@ Le système SHALL présenter la documentation de la page « Aide » en sections 
 
 - **WHEN** la page « Aide » est affichée sur un écran étroit
 - **THEN** le texte revient à la ligne et aucun contenu documenté n'est masqué ni tronqué
+
+#### Scenario: The GTD board has its own section
+
+- **WHEN** la page « Aide » est rendue
+- **THEN** les rubriques GTD de la page d'accueil sont documentées dans une section titrée distincte des autres sujets
 
 ### Requirement: Afficher la version servie en bas de la page Aide
 
@@ -170,4 +175,95 @@ Le système SHALL afficher, à la fin du contenu de la page « Aide » et à l'i
 #### Scenario: Le tag s'adapte à un écran étroit
 - **WHEN** la page « Aide » est affichée sur un écran étroit
 - **THEN** la ligne de version revient à la ligne sans masquer ni tronquer de contenu
+
+### Requirement: Document the GTD rubriques of the home page
+
+Le système SHALL documenter dans la page « Aide » les trois rubriques GTD de la page d'accueil — « À faire », « En attente » et « Un jour peut-être » —, leur signification, le rattachement d'une tâche à une autre rubrique par glisser-déposer et l'alternative accessible par le menu de rubrique. La documentation SHALL rappeler que le titre d'une carte ouvre la tâche dans son domaine.
+
+#### Scenario: The guide explains the three rubriques
+
+- **WHEN** la page « Aide » est rendue
+- **THEN** elle nomme « À faire », « En attente » et « Un jour peut-être » et explique ce que chacune regroupe
+
+#### Scenario: The guide explains the drag and drop
+
+- **WHEN** la page « Aide » est rendue
+- **THEN** elle indique qu'une carte se déplace d'une rubrique à une autre par glisser-déposer, à la souris comme au doigt
+
+#### Scenario: The guide explains the keyboard alternative
+
+- **WHEN** la page « Aide » est rendue
+- **THEN** elle indique que le menu de rubrique d'une carte permet le même classement sans glisser
+
+#### Scenario: The guide explains how to open a task
+
+- **WHEN** la page « Aide » est rendue
+- **THEN** elle indique que le titre d'une carte ouvre la tâche dans son domaine, avec ses ancêtres dépliés et la ligne mise en évidence
+
+### Requirement: Document what the GTD board excludes
+
+Le système SHALL indiquer dans la page « Aide » qu'une tâche feuille non terminée appartient à exactement une rubrique, et que les tâches terminées et les lignes mères ne sont pas listées.
+
+#### Scenario: The guide explains what is not listed
+
+- **WHEN** la page « Aide » est rendue
+- **THEN** elle indique que les tâches terminées et les lignes mères ne figurent pas dans les rubriques
+
+#### Scenario: A task belongs to exactly one rubrique
+
+- **WHEN** la page « Aide » est rendue
+- **THEN** elle indique qu'une tâche feuille non terminée est classée dans une seule des trois rubriques
+
+### Requirement: Documenter la sauvegarde et la restauration
+
+Le système SHALL documenter dans la page « Aide » une section « Sauvegarder et restaurer ses données » expliquant que le fichier JSON exporté contient les thèmes, les domaines actifs et les archives, qu'il ne contient ni l'adresse email ni les passkeys, que la restauration remplace intégralement les données du compte, et que les commandes se trouvent dans la section « Sauvegarde » de la page Administration. La section SHALL contenir un lien vers `/administration`.
+
+#### Scenario: Le guide documente l'export
+
+- **WHEN** la page « Aide » est rendue
+- **THEN** elle décrit le fichier JSON exporté et son contenu : les thèmes, les domaines actifs et les archives
+
+#### Scenario: Le guide documente les exclusions
+
+- **WHEN** la page « Aide » est rendue
+- **THEN** elle indique que l'export ne contient ni l'adresse email ni les passkeys
+
+#### Scenario: Le guide explique le remplacement
+
+- **WHEN** la page « Aide » est rendue
+- **THEN** elle indique que la restauration remplace l'intégralité des données actuelles du compte
+
+#### Scenario: Le guide renvoie vers la page Administration
+
+- **WHEN** la page « Aide » est rendue
+- **THEN** elle indique que les commandes se trouvent dans la section « Sauvegarde » de la page Administration et contient un lien vers `/administration`
+
+### Requirement: Document domain ordering in the guide
+
+Le système SHALL documenter dans la page « Aide » le classement manuel des domaines depuis le panneau latéral : les contrôles ↑/↓ présents sur chaque entrée, le fait que l'ordre obtenu est partagé avec la page Administration et la page d'accueil, et le fait que les thèmes restent des étiquettes sans regrouper les domaines du panneau. Cette documentation SHALL être rendue dans une section titrée de la page, rester entièrement lisible sans JavaScript, et ne SHALL pas ajouter de second lien vers `/administration`.
+
+#### Scenario: The guide documents the reordering controls
+
+- **WHEN** la page « Aide » est rendue
+- **THEN** elle décrit les contrôles ↑/↓ du panneau latéral et le déplacement d'un domaine d'un cran vers le haut ou vers le bas
+
+#### Scenario: The guide explains the shared order
+
+- **WHEN** la page « Aide » est rendue
+- **THEN** elle indique que l'ordre des domaines est le même dans le panneau, dans la page Administration et sur la page d'accueil
+
+#### Scenario: The guide keeps themes as labels
+
+- **WHEN** la page « Aide » est rendue
+- **THEN** elle indique que les thèmes restent des étiquettes et ne regroupent plus les domaines du panneau
+
+#### Scenario: The section is readable without JavaScript
+
+- **WHEN** la page « Aide » est affichée alors que `app.js` ne s'exécute pas
+- **THEN** la section sur le classement des domaines reste entièrement affichée
+
+#### Scenario: The guide keeps a single administration link
+
+- **WHEN** la page « Aide » est rendue
+- **THEN** elle contient un seul lien vers `/administration`
 

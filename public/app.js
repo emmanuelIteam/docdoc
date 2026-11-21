@@ -1120,6 +1120,358 @@ document.addEventListener('pointercancel', (e) => {
 });
 
 /* -------------------------------------------------------------------- */
+/* Home board: drag a card between the three GTD rubriques.              */
+/*                                                                      */
+/* HTML5 drag for a mouse/pen, Pointer Events from the grip for touch.  */
+/* Both paths end in the same status POST and replace #home-board with  */
+/* the server-rendered fragment, so counts and empty states stay true.  */
+/* -------------------------------------------------------------------- */
+
+const GTD_LABELS = { todo: 'À faire', waiting: 'En attente', someday: 'Un jour peut-être' };
+const GTD_TOUCH_THRESHOLD = 8;
+
+let gtdNativeDrag = null;
+let gtdNativeGhost = null;
+let gtdTouchDrag = null;
+let gtdBusy = false;
+let gtdPendingMove = null;
+let gtdSuppressClickUntil = 0;
+
+function gtdClearDropTarget() {
+  document
+    .querySelectorAll('.gtd-column.gtd-drop-target, .gtd-column.gtd-drop-invalid')
+    .forEach((el) => el.classList.remove('gtd-drop-target', 'gtd-drop-invalid'));
+}
+
+function gtdSetDropTarget(column) {
+  gtdClearDropTarget();
+  if (column) column.classList.add('gtd-drop-target');
+}
+
+function gtdBuildGhost(card) {
+  const ghost = document.createElement('div');
+  ghost.className = 'gtd-drag-ghost';
+  const clone = card.cloneNode(true);
+  clone.classList.remove('dragging', 'gtd-touch-pending');
+  clone.removeAttribute('id');
+  clone.querySelectorAll('[id]').forEach((el) => el.removeAttribute('id'));
+  clone.querySelectorAll('.gtd-move').forEach((el) => el.remove());
+  ghost.appendChild(clone);
+  document.body.appendChild(ghost);
+  return ghost;
+}
+
+function gtdRemoveGhost(ghost) {
+  if (ghost) ghost.remove();
+}
+
+function gtdCardTitle(card) {
+  const title = card.querySelector('.gtd-card-title');
+  return title ? title.textContent.trim() : '';
+}
+
+function gtdAnnounce(message) {
+  const live = document.getElementById('gtd-announcer');
+  if (!live) return;
+  live.textContent = '';
+  // Clearing then setting on the next frame re-announces the same message.
+  requestAnimationFrame(() => {
+    live.textContent = message;
+  });
+}
+
+function gtdFinishMove() {
+  if (!gtdPendingMove) return;
+  const pending = gtdPendingMove;
+  gtdPendingMove = null;
+  const card = document.getElementById('gtd-node-' + pending.nodeId);
+  const link = card && card.querySelector('.gtd-card-title');
+  if (link) link.focus();
+  gtdAnnounce('« ' + pending.title + ' » déplacée vers ' + pending.targetLabel + '.');
+}
+
+function gtdFailMove() {
+  gtdBusy = false;
+  gtdPendingMove = null;
+  gtdAnnounce('Le déplacement a échoué. Le tableau va être rechargé.');
+  location.reload();
+}
+
+function gtdMoveCard(card, targetRubrique) {
+  if (!card || gtdBusy) return;
+  if (targetRubrique === card.dataset.rubrique) return;
+  const url =
+    '/domaine/' +
+    encodeURIComponent(card.dataset.domain) +
+    '/api/nodes/' +
+    encodeURIComponent(card.dataset.node) +
+    '/status';
+  const status = targetRubrique === 'todo' ? 'todo' : targetRubrique;
+  gtdBusy = true;
+  gtdPendingMove = {
+    nodeId: card.dataset.node,
+    title: gtdCardTitle(card),
+    targetLabel: GTD_LABELS[targetRubrique] || targetRubrique,
+  };
+  const board = document.getElementById('home-board');
+  if (board) board.setAttribute('aria-busy', 'true');
+
+  if (window.htmx) {
+    htmx.ajax('POST', url, {
+      target: '#home-board',
+      swap: 'outerHTML',
+      values: { status: status, scope: 'head', vue: 'accueil' },
+    });
+    return;
+  }
+
+  // htmx is always loaded by the shell; this fallback keeps the gesture usable
+  // if a page is opened without it.
+  const body = new URLSearchParams({ status: status, scope: 'head', vue: 'accueil' });
+  fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+  })
+    .then((res) => {
+      if (!res.ok) throw new Error('Déplacement refusé (' + res.status + ')');
+      return res.text();
+    })
+    .then((html) => {
+      const current = document.getElementById('home-board');
+      if (!current) throw new Error('Tableau introuvable');
+      current.outerHTML = html;
+      const fresh = document.getElementById('home-board');
+      if (window.htmx && fresh) htmx.process(fresh);
+      gtdBusy = false;
+      gtdFinishMove();
+    })
+    .catch((err) => {
+      console.error('Erreur déplacement GTD:', err);
+      gtdFailMove();
+    });
+}
+
+function gtdClearNativeDrag() {
+  if (gtdNativeDrag) gtdNativeDrag.classList.remove('dragging');
+  gtdNativeDrag = null;
+  gtdRemoveGhost(gtdNativeGhost);
+  gtdNativeGhost = null;
+  gtdClearDropTarget();
+}
+
+document.addEventListener('dragstart', (e) => {
+  const card = e.target.closest('.gtd-card');
+  if (!card) return;
+  // The title is a link and the menu is a control: a drag starts from the card
+  // body or the grip, never from those interactive descendants.
+  if (e.target.closest('a, summary, button') && !e.target.closest('.gtd-grip')) {
+    e.preventDefault();
+    return;
+  }
+  if (gtdBusy) {
+    e.preventDefault();
+    return;
+  }
+  gtdNativeDrag = card;
+  card.classList.add('dragging');
+  gtdNativeGhost = gtdBuildGhost(card);
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', card.dataset.node || '');
+    e.dataTransfer.setDragImage(gtdNativeGhost, 12, 12);
+  }
+});
+
+document.addEventListener('dragover', (e) => {
+  if (!gtdNativeDrag) return;
+  const column = e.target.closest('.gtd-column');
+  if (!column) {
+    gtdClearDropTarget();
+    return;
+  }
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+  gtdSetDropTarget(column);
+});
+
+document.addEventListener('drop', (e) => {
+  if (!gtdNativeDrag) return;
+  const card = gtdNativeDrag;
+  const column = e.target.closest('.gtd-column');
+  gtdClearNativeDrag();
+  if (!column) return;
+  e.preventDefault();
+  gtdMoveCard(card, column.dataset.gtd);
+});
+
+document.addEventListener('dragend', () => {
+  gtdClearNativeDrag();
+});
+
+/* Touch: HTML5 drag does not fire, so the grip drives a pointer gesture. */
+
+function gtdPlaceTouchGhost(x, y) {
+  if (!gtdTouchDrag || !gtdTouchDrag.ghost) return;
+  const height = gtdTouchDrag.ghost.offsetHeight || 0;
+  gtdTouchDrag.ghost.style.left = Math.round(x + 12) + 'px';
+  gtdTouchDrag.ghost.style.top = Math.max(8, Math.round(y - height - 16)) + 'px';
+}
+
+function gtdUpdateTouchTarget() {
+  if (!gtdTouchDrag) return;
+  const x = gtdTouchDrag.x;
+  const y = gtdTouchDrag.y;
+  const el = document.elementFromPoint(x, y);
+  const column = el && el.closest('.gtd-column');
+  gtdTouchDrag.target = column;
+  gtdSetDropTarget(column);
+}
+
+function gtdTouchTick() {
+  if (!gtdTouchDrag || !gtdTouchDrag.active) return;
+  const step = touchScrollStep(gtdTouchDrag.y);
+  if (step) {
+    window.scrollBy(0, step);
+    gtdUpdateTouchTarget();
+  }
+  gtdTouchDrag.raf = requestAnimationFrame(gtdTouchTick);
+}
+
+function gtdStartTouchDrag() {
+  if (!gtdTouchDrag) return;
+  const card = gtdTouchDrag.card;
+  gtdTouchDrag.active = true;
+  card.classList.remove('gtd-touch-pending');
+  card.classList.add('dragging');
+  gtdTouchDrag.ghost = gtdBuildGhost(card);
+  gtdPlaceTouchGhost(gtdTouchDrag.x, gtdTouchDrag.y);
+  gtdUpdateTouchTarget();
+  gtdTouchDrag.raf = requestAnimationFrame(gtdTouchTick);
+}
+
+function gtdClearTouchDrag() {
+  if (!gtdTouchDrag) return;
+  if (gtdTouchDrag.raf) cancelAnimationFrame(gtdTouchDrag.raf);
+  if (gtdTouchDrag.card) gtdTouchDrag.card.classList.remove('dragging', 'gtd-touch-pending');
+  gtdRemoveGhost(gtdTouchDrag.ghost);
+  const grip = gtdTouchDrag.grip;
+  const pointerId = gtdTouchDrag.pointerId;
+  const active = gtdTouchDrag.active;
+  gtdTouchDrag = null;
+  gtdClearDropTarget();
+  if (grip) {
+    try {
+      grip.releasePointerCapture(pointerId);
+    } catch {
+      // The capture may already be gone; harmless.
+    }
+  }
+  return active;
+}
+
+document.addEventListener('pointerdown', (e) => {
+  if (e.pointerType === 'mouse') return; // the native drag handles the mouse
+  const grip = e.target.closest('.gtd-grip');
+  if (!grip) return;
+  const card = grip.closest('.gtd-card');
+  if (!card || gtdTouchDrag) return;
+  e.preventDefault();
+  gtdTouchDrag = {
+    grip,
+    card,
+    pointerId: e.pointerId,
+    startX: e.clientX,
+    startY: e.clientY,
+    x: e.clientX,
+    y: e.clientY,
+    active: false,
+    target: null,
+    ghost: null,
+    raf: 0,
+  };
+  grip.setPointerCapture(e.pointerId);
+  card.classList.add('gtd-touch-pending');
+});
+
+document.addEventListener('pointermove', (e) => {
+  if (!gtdTouchDrag || e.pointerId !== gtdTouchDrag.pointerId) return;
+  const dx = e.clientX - gtdTouchDrag.startX;
+  const dy = e.clientY - gtdTouchDrag.startY;
+  if (!gtdTouchDrag.active) {
+    if (Math.hypot(dx, dy) < GTD_TOUCH_THRESHOLD) return;
+    gtdStartTouchDrag();
+  }
+  gtdTouchDrag.x = e.clientX;
+  gtdTouchDrag.y = e.clientY;
+  gtdPlaceTouchGhost(e.clientX, e.clientY);
+  gtdUpdateTouchTarget();
+});
+
+document.addEventListener('pointerup', (e) => {
+  if (!gtdTouchDrag || e.pointerId !== gtdTouchDrag.pointerId) return;
+  const wasDragging = gtdTouchDrag.active;
+  const card = gtdTouchDrag.card;
+  const target = gtdTouchDrag.target ? gtdTouchDrag.target.dataset.gtd : null;
+  gtdClearTouchDrag();
+  if (!wasDragging) return;
+  gtdSuppressClickUntil = performance.now() + 400;
+  if (target) gtdMoveCard(card, target);
+});
+
+document.addEventListener('pointercancel', (e) => {
+  if (!gtdTouchDrag || e.pointerId !== gtdTouchDrag.pointerId) return;
+  gtdClearTouchDrag();
+});
+
+// A touch drag ends with a click on the grip or the card behind it; it must not
+// activate the title link or open the rubrique menu.
+document.addEventListener(
+  'click',
+  (e) => {
+    if (gtdSuppressClickUntil > performance.now()) {
+      gtdSuppressClickUntil = 0;
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  },
+  true
+);
+
+// Menu choices are ordinary htmx requests: remember their target so the focus
+// and the live announcement work exactly as after a drop.
+document.addEventListener('htmx:beforeRequest', (e) => {
+  const elt = e.detail && e.detail.elt;
+  if (!elt || !elt.closest || !elt.closest('#home-board')) return;
+  const card = elt.closest('.gtd-card');
+  const button = elt.closest('.gtd-move-item');
+  if (!card || !button) return;
+  if (gtdBusy) {
+    e.preventDefault();
+    return;
+  }
+  gtdBusy = true;
+  gtdPendingMove = {
+    nodeId: card.dataset.node,
+    title: gtdCardTitle(card),
+    targetLabel: button.textContent.trim(),
+  };
+  const board = document.getElementById('home-board');
+  if (board) board.setAttribute('aria-busy', 'true');
+});
+
+document.addEventListener('htmx:afterSwap', (e) => {
+  const target = e.detail && e.detail.target;
+  if (!target || target.id !== 'home-board') return;
+  gtdBusy = false;
+  gtdFinishMove();
+});
+
+document.addEventListener('htmx:responseError', () => {
+  if (gtdBusy) gtdFailMove();
+});
+
+/* -------------------------------------------------------------------- */
 /* Sidebar: toggle collapse + fold after a page entry on a phone.        */
 /* The collapsed state is persisted in localStorage so it survives       */
 /* navigation (each page is a full load and re-applies the state).       */
@@ -1776,3 +2128,56 @@ document.body.addEventListener('htmx:responseError', (e) => {
     window.location.href = '/';
   }
 });
+
+/* -------------------------------------------------------------------- */
+/* Administration: restore a JSON backup.                                */
+/* The export is a plain link; only the destructive restore needs this    */
+/* handler. The submit button starts disabled so a browser without        */
+/* JavaScript cannot submit the raw form (the server expects JSON).       */
+/* -------------------------------------------------------------------- */
+
+(() => {
+  const form = document.getElementById('restore-form');
+  if (!form) return;
+  const fileInput = document.getElementById('restore-file');
+  const confirmBox = document.getElementById('restore-confirm');
+  const submit = form.querySelector('button[type="submit"]');
+  const status = document.getElementById('restore-status');
+  const maxBytes = 10 * 1024 * 1024;
+  const idleLabel = submit ? submit.textContent : '';
+
+  if (submit) submit.disabled = false;
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!submit || !status) return;
+    status.removeAttribute('role');
+    status.textContent = '';
+    submit.disabled = true;
+    submit.textContent = 'Restauration…';
+    try {
+      const file = fileInput && fileInput.files && fileInput.files[0];
+      if (!file) throw new Error('Choisissez un fichier de sauvegarde.');
+      if (!confirmBox || !confirmBox.checked) {
+        throw new Error('Cochez la confirmation avant de restaurer.');
+      }
+      if (file.size > maxBytes) throw new Error('Sauvegarde trop volumineuse (10 Mo maximum).');
+      const text = await file.text();
+      const response = await fetch('/api/restore?confirm=replace', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: text,
+      });
+      if (!response.ok) {
+        const message = (await response.text()).trim();
+        throw new Error(message || 'La restauration a échoué.');
+      }
+      window.location.assign('/administration?restaure=ok#admin-backup');
+    } catch (error) {
+      status.setAttribute('role', 'alert');
+      status.textContent = error.message;
+      submit.disabled = false;
+      submit.textContent = idleLabel;
+    }
+  });
+})();

@@ -1,6 +1,6 @@
 # Free-tier container hosting for `docker.io/emmanuel7044/docdoc:1.1`
 
-Researched 2026-10-06. Workload: single Node.js 22 + Express container, port 3000, ~0 traffic, external S3 state, scale-to-zero OK.
+Researched 2026-10-06. Workload: single container, port 3000, ~0 traffic, external S3 state, scale-to-zero OK. At research time the app was Node.js 22 + Express; the production image now ships the Rust port, which keeps the same port and S3 contract.
 
 ## Summary table
 

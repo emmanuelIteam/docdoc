@@ -115,7 +115,7 @@ sops exec-env secrets.sops.yaml 'tofu plan'
 sops exec-env secrets.sops.yaml 'tofu apply'
 ```
 
-Pour lancer l'application en local avec ces secrets, le plus simple reste d'exporter `TF_VAR_session_secret` (pont ci-dessus) puis `npm start` : `sops exec-env` est prévu pour une commande passée en un seul argument, ce qui complique les commandes composées sous Windows.
+Pour lancer l'application en local avec ces secrets, le plus simple reste d'exporter `TF_VAR_session_secret` (pont ci-dessus) puis de lancer l'implémentation voulue : `npm start` pour la référence Node, ou `cd rust && cargo run` pour le serveur publié. `sops exec-env` est prévu pour une commande passée en un seul argument, ce qui complique les commandes composées sous Windows.
 
 Ne jamais déchiffrer vers un fichier (`sops -d secrets.sops.yaml > secrets.yaml`) : les valeurs se saisissent dans sops, et le YAML en clair ne doit jamais exister sur le disque.
 

@@ -82,6 +82,7 @@ services:
       - "${PORT:-3000}:3000"
     environment:
       - PORT=3000
+      - HOST=0.0.0.0
       - NODE_ENV=development
       - SESSION_SECRET=dev-secret-a-remplacer
       - AUTHORIZED_EMAILS=emmanuel.grandiere@laposte.net
@@ -90,6 +91,8 @@ services:
       - S3_BUCKET=docdoc-json-storage
       - AWS_ACCESS_KEY_ID=minioadmin
       - AWS_SECRET_ACCESS_KEY=minioadmin
+      - DOCDOC_PUBLIC_DIR=/app/public
+      - DOCDOC_DATA_DIR=/app/data
       # Les codes partent vers le catcher, pas vers une vraie boîte.
       - EMAIL_PROVIDER=smtp
       - SMTP_HOST=mailpit
@@ -99,7 +102,7 @@ services:
     volumes:
       # Read-only legacy import source: on first run against an empty bucket the
       # app imports the local data files, then the bucket becomes the store.
-      - ./data:/app/data
+      - ./data:/app/data:ro
     depends_on:
       minio:
         condition: service_healthy
@@ -111,7 +114,7 @@ services:
     deploy:
       replicas: 1
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/"]
       interval: 30s
       timeout: 5s
       retries: 3

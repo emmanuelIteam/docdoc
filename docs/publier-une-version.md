@@ -99,7 +99,7 @@ scw container container get <SCW_CONTAINER_ID> -o json | jq '.status, .image'
 | Étape | Détail |
 | --- | --- |
 | Validation | Le tag doit correspondre à `^[0-9]+\.[0-9]+(\.[0-9]+)?$`. |
-| Build | `docker build --build-arg APP_VERSION=<tag>` : l'étape `assets` du `Dockerfile` minifie `app.js`, `auth.js`, `pwa.js` et `style.css`, et inscrit le tag dans `CACHE_VERSION` de `sw.js`. L'étape finale le conserve dans `APP_VERSION`, que la page Aide affiche. |
+| Build | `docker build --build-arg APP_VERSION=<tag>` : l'étape `assets` du `Dockerfile` minifie `app.js`, `auth.js`, `pwa.js` et `style.css`, et inscrit le tag dans `CACHE_VERSION` de `sw.js` ; l'étape `builder` compile le serveur Rust. L'étape finale expose le tag dans `APP_VERSION`, que la page Aide affiche. |
 | Publication | `docker.io/emmanuel7044/docdoc:<tag>`, image `linux/amd64` unique, sans tag `latest`. |
 | Déploiement | `scw container container update` sur `docdoc-app`, puis attente du statut `ready` sur la nouvelle image (10 minutes au plus). |
 | Contrôle | Si `APP_URL` est définie, `GET /sw.js` doit déclarer `CACHE_VERSION = '<tag>'` (2 minutes au plus) ; sinon l'étape est ignorée. |
@@ -155,7 +155,7 @@ Le retour arrière ne touche ni les données (bucket S3) ni les passkeys (le RP 
 
 ## Liste de contrôle
 
-- [ ] `main` est propre et les tests passent (`npm test`).
+- [ ] `main` est propre et les tests passent (`npm test` pour la référence Node, `cd rust && cargo test` pour le serveur Rust publié).
 - [ ] `app_image` dans `main.tf` désigne la version publiée, et le changement est commité.
 - [ ] Le tag est numérique, sans préfixe ni suffixe, et n'a jamais été publié.
 - [ ] Le run `Release` est vert jusqu'au job `deploy`.

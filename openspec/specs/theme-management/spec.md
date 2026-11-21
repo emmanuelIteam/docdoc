@@ -38,7 +38,7 @@ The system SHALL allow the user to change a theme's name and color in place from
 
 ### Requirement: Delete a theme
 
-The system SHALL allow the user to delete a theme from the administration page, removing it from the palette and removing its id from the `labels` of every domain that carries it.
+The system SHALL allow the user to delete a theme from the administration page, removing it from the palette and removing its id from the `labels` of every domain that carries it. The theme SHALL disappear from the matrix and from the theme picker; the sidebar's flat domain list SHALL remain unchanged, since it does not depend on themes.
 
 #### Scenario: Delete removes the theme from the palette
 
@@ -50,10 +50,15 @@ The system SHALL allow the user to delete a theme from the administration page, 
 - **WHEN** a theme is deleted
 - **THEN** the theme's id is removed from the `labels` of every domain that carried it
 
-#### Scenario: The deleted theme disappears from the sidebar and the matrix
+#### Scenario: The deleted theme disappears from the matrix and the picker
 
 - **WHEN** a theme is deleted
-- **THEN** its group is no longer rendered in the sidebar and its row is no longer rendered in the matrix
+- **THEN** its row is no longer rendered in the matrix and its option is no longer offered by the label picker
+
+#### Scenario: The sidebar stays a flat list
+
+- **WHEN** a theme is deleted
+- **THEN** the sidebar still lists every domain exactly once, in the same order
 
 ### Requirement: Paste a theme label on a domain
 
@@ -95,7 +100,7 @@ The system SHALL allow detaching a theme from a domain from the label chips of t
 
 ### Requirement: Reorder themes
 
-The system SHALL allow moving a theme one position up or down in the palette from the administration page, and SHALL persist the resulting palette order, which governs the order of the theme groups in the sidebar and of the theme rows in the matrix.
+The system SHALL allow moving a theme one position up or down in the palette from the administration page, and SHALL persist the resulting palette order, which governs the order of the theme rows in the matrix and of the theme options in the label picker. The sidebar's domain list SHALL NOT depend on the palette order.
 
 #### Scenario: Moving a theme up swaps it with its predecessor
 
@@ -112,10 +117,20 @@ The system SHALL allow moving a theme one position up or down in the palette fro
 - **WHEN** the user moves the last theme of the palette down
 - **THEN** the palette order is unchanged
 
-#### Scenario: The new order is reflected in the sidebar
+#### Scenario: The new order is reflected in the matrix
 
 - **WHEN** the palette order changes
-- **THEN** the sidebar renders the theme groups in the new order
+- **THEN** the matrix renders the theme rows in the new order
+
+#### Scenario: The picker follows the palette order
+
+- **WHEN** the palette order changes
+- **THEN** the label picker offers the themes in the new order
+
+#### Scenario: The sidebar is unaffected
+
+- **WHEN** the palette order changes
+- **THEN** the sidebar's flat domain list keeps the same domain order
 
 ### Requirement: Show the theme × domain matrix
 
@@ -143,7 +158,7 @@ The system SHALL display, in the themes section of the administration page, a ma
 
 ### Requirement: Manage labels from a floating bar
 
-The system SHALL render the active domain's labels in a floating bar fixed at the bottom right of the domain page. The bar SHALL show one removable chip per attached theme. When the palette has at least one theme, it SHALL also show an add control that reveals the theme picker; when the palette is empty, it SHALL show a message linking to the administration page. Attaching or detaching a theme from the bar SHALL update the bar and the sidebar in place, without reloading the page or losing the scroll position.
+The system SHALL render the active domain's labels in a floating bar fixed at the bottom right of the domain page. The bar SHALL show one removable chip per attached theme. When the palette has at least one theme, it SHALL also show an add control that reveals the theme picker; when the palette is empty, it SHALL show a message linking to the administration page. Attaching or detaching a theme from the bar SHALL update the bar in place, without reloading the page or losing the scroll position. The sidebar's flat domain list SHALL NOT change, since it no longer depends on theme labels.
 
 #### Scenario: The bar is fixed at the bottom right
 
@@ -165,10 +180,10 @@ The system SHALL render the active domain's labels in a floating bar fixed at th
 - **WHEN** the user attaches or detaches a theme from the bar
 - **THEN** the bar reflects the change without a page reload and the scroll position is preserved
 
-#### Scenario: The sidebar follows in the same response
+#### Scenario: The sidebar keeps its flat list
 
 - **WHEN** the user attaches or detaches a theme from the bar
-- **THEN** the sidebar immediately groups the domain under the new theme group, or under "Sans thème" when it has no label left
+- **THEN** the sidebar still lists every domain exactly once, in the same order
 
 #### Scenario: An empty palette points to the administration
 

@@ -53,8 +53,28 @@ function sessionSecret() {
 // caller does not provide one.
 const DEFAULT_THEME_COLORS = ['#2563eb', '#14b8a6', '#f59e0b', '#ef4444', '#8b5cf6', '#10b981'];
 
+// The portable backup document. `version` is bumped whenever the shape changes
+// in a way an older importer could misread; the reader accepts exactly the
+// version it knows. A whole account is text, so 10 MiB leaves ample headroom
+// while keeping a single request bounded.
+const BACKUP_FORMAT = 'docdoc-backup';
+const BACKUP_VERSION = 1;
+const BACKUP_MAX_BYTES = 10 * 1024 * 1024;
+
 const app = express();
 app.set('trust proxy', 1);
+// The restore body is the backup file itself: raw `application/json`, not a
+// multipart form, so no upload dependency is needed. The parser is mounted only
+// on that route and before the global `express.json()`, whose 100 kb default
+// stays untouched for every other request. The error handler turns the parser's
+// own 413 into the plain-text message the restore page displays.
+app.use('/api/restore', express.raw({ type: 'application/json', limit: '10mb' }));
+app.use('/api/restore', (err, req, res, next) => {
+  if (err && err.type === 'entity.too.large') {
+    return res.status(413).type('text/plain').send('Sauvegarde trop volumineuse (10 Mo maximum).');
+  }
+  return next(err);
+});
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -203,6 +223,16 @@ function redirectAfter(req, res, defaultPath) {
   res.redirect(302, returnTo === '/administration' ? '/administration' : defaultPath);
 }
 
+// A return target is trusted only as a same-origin absolute path: one leading
+// slash, no protocol-relative `//`, no backslash and no control character. The
+// sidebar's move forms render the current page path, but the POST body is
+// user-controlled, so the value is still validated before a redirect.
+function localPath(value) {
+  if (typeof value !== 'string' || value[0] !== '/' || value.startsWith('//')) return null;
+  if (value.includes('\\') || /[\u0000-\u001f\u007f]/.test(value)) return null;
+  return value;
+}
+
 async function loadThemes(space) {
   const parsed = await storage.readJson(storage.themesKey(space.userId));
   if (!Array.isArray(parsed)) {
@@ -229,7 +259,37 @@ function genId() {
   return crypto.randomUUID();
 }
 
-const VALID_STATUSES = ['todo', 'in_progress', 'done'];
+const VALID_STATUSES = ['todo', 'in_progress', 'waiting', 'someday', 'done'];
+
+// The five line statuses and the three GTD rubriques of the home page. `todo`
+// and `in_progress` share the "À faire" rubrique because a started task is
+// still actionable; the other two map one-to-one. Keeping these tables at
+// module level lets the outline menu and the home board use the same labels.
+const STATUS_ICONS = { todo: '○', in_progress: '◐', waiting: '◷', someday: '✧', done: '●' };
+const STATUS_LABELS = {
+  todo: 'À faire',
+  in_progress: 'En cours',
+  waiting: 'En attente',
+  someday: 'Un jour peut-être',
+  done: 'Terminé',
+};
+const GTD_RUBRIQUES = [
+  { id: 'todo', label: 'À faire', statuses: ['todo', 'in_progress'] },
+  { id: 'waiting', label: 'En attente', statuses: ['waiting'] },
+  { id: 'someday', label: 'Un jour peut-être', statuses: ['someday'] },
+];
+
+function statusClass(status) {
+  return status === 'in_progress'
+    ? 'status-in-progress'
+    : status === 'done'
+      ? 'status-done'
+      : status === 'waiting'
+        ? 'status-waiting'
+        : status === 'someday'
+          ? 'status-someday'
+          : '';
+}
 
 function normalizeDomain(themes, raw) {
   // Keep only theme ids that still exist in the palette (prune orphans from
@@ -417,6 +477,218 @@ async function listArchivedDomains(space) {
   }
   archives.sort((a, b) => a.name.localeCompare(b.name));
   return archives;
+}
+
+// Full archived domains, for the backup document. The administration list only
+// needs a summary; the backup must carry the outline, labels and display order
+// so a restore can bring an archive back intact.
+async function readArchivedDomains(space) {
+  const keys = await storage.listArchiveKeys(space.userId);
+  const archives = [];
+  for (const key of keys) {
+    const parsed = await storage.readJson(key);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
+    if (typeof parsed.id !== 'string' || !Array.isArray(parsed.projects)) continue;
+    const domain = normalizeDomain(space.themes, parsed);
+    domain.displayOrder = ensureDisplayOrder(domain.projects, domain.displayOrder);
+    archives.push(domain);
+  }
+  archives.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+  return archives;
+}
+
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+class BackupValidationError extends Error {}
+
+function rejectBackup(message) {
+  throw new BackupValidationError(message);
+}
+
+// Validate the task tree and return it with the same defaults the application
+// applies when it loads a domain: a missing title is empty, a missing status is
+// "todo", a missing collapsed flag is false. Unknown fields are preserved.
+function validateBackupNodes(nodes, domainName, seen) {
+  if (!Array.isArray(nodes)) {
+    rejectBackup(`Le domaine « ${domainName} » contient une liste de tâches invalide.`);
+  }
+  return nodes.map((raw) => {
+    if (!isPlainObject(raw)) {
+      rejectBackup(`Une tâche du domaine « ${domainName} » n'est pas un objet.`);
+    }
+    if (typeof raw.id !== 'string' || !raw.id) {
+      rejectBackup(`Une tâche du domaine « ${domainName} » n'a pas d'identifiant.`);
+    }
+    if (seen.has(raw.id)) {
+      rejectBackup(`L'identifiant de tâche « ${raw.id} » est dupliqué dans le domaine « ${domainName} ».`);
+    }
+    seen.add(raw.id);
+    if (raw.title !== undefined && typeof raw.title !== 'string') {
+      rejectBackup(`Le titre de la tâche « ${raw.id} » du domaine « ${domainName} » n'est pas textuel.`);
+    }
+    if (raw.status !== undefined && !VALID_STATUSES.includes(raw.status)) {
+      rejectBackup(`Statut inconnu pour la tâche « ${raw.id} » du domaine « ${domainName} ».`);
+    }
+    if (raw.collapsed !== undefined && typeof raw.collapsed !== 'boolean') {
+      rejectBackup(`L'état de repli de la tâche « ${raw.id} » du domaine « ${domainName} » est invalide.`);
+    }
+    if (raw.children !== undefined && !Array.isArray(raw.children)) {
+      rejectBackup(`Les sous-tâches de « ${raw.id} » du domaine « ${domainName} » ne sont pas une liste.`);
+    }
+    return {
+      ...raw,
+      title: typeof raw.title === 'string' ? raw.title : '',
+      status: typeof raw.status === 'string' ? raw.status : 'todo',
+      collapsed: typeof raw.collapsed === 'boolean' ? raw.collapsed : false,
+      children: validateBackupNodes(raw.children || [], domainName, seen),
+    };
+  });
+}
+
+function validateBackupDomain(raw, kind, themeIds, ids, activeSlugs) {
+  const label = kind === 'archive' ? 'archive' : 'domaine';
+  if (!isPlainObject(raw)) {
+    rejectBackup(`Un ${label} de la sauvegarde n'est pas un objet.`);
+  }
+  if (typeof raw.id !== 'string' || !raw.id) {
+    rejectBackup(`Un ${label} de la sauvegarde n'a pas d'identifiant.`);
+  }
+  if (ids.has(raw.id)) {
+    rejectBackup(`Identifiant de ${label} dupliqué dans la sauvegarde : « ${raw.id} ».`);
+  }
+  ids.add(raw.id);
+  if (typeof raw.name !== 'string') {
+    rejectBackup(`Le nom du ${label} « ${raw.id} » n'est pas textuel.`);
+  }
+  if (typeof raw.slug !== 'string') {
+    rejectBackup(`Le slug du ${label} « ${raw.name} » n'est pas textuel.`);
+  }
+  if (typeof raw.order !== 'number' || !Number.isFinite(raw.order)) {
+    rejectBackup(`L'ordre du ${label} « ${raw.name} » n'est pas un nombre.`);
+  }
+  if (!Array.isArray(raw.labels)) {
+    rejectBackup(`Les libellés du ${label} « ${raw.name} » ne sont pas une liste.`);
+  }
+  for (const labelId of raw.labels) {
+    if (typeof labelId !== 'string' || !themeIds.has(labelId)) {
+      rejectBackup(`Le libellé « ${labelId} » du ${label} « ${raw.name} » ne correspond à aucun thème.`);
+    }
+  }
+  if (raw.displayOrder !== undefined) {
+    if (!Array.isArray(raw.displayOrder) || raw.displayOrder.some((id) => typeof id !== 'string')) {
+      rejectBackup(`L'ordre d'affichage du ${label} « ${raw.name} » est invalide.`);
+    }
+  }
+  if (!Array.isArray(raw.projects)) {
+    rejectBackup(`Le ${label} « ${raw.name} » n'a pas de liste de projets.`);
+  }
+  const projects = validateBackupNodes(raw.projects, raw.name || raw.id, new Set());
+  if (kind === 'domain') {
+    if (activeSlugs.has(raw.slug)) {
+      rejectBackup(`Deux domaines actifs partagent le slug « ${raw.slug} ».`);
+    }
+    activeSlugs.add(raw.slug);
+  }
+  return {
+    id: raw.id,
+    name: raw.name,
+    slug: raw.slug,
+    order: raw.order,
+    labels: [...raw.labels],
+    projects,
+    displayOrder: ensureDisplayOrder(projects, Array.isArray(raw.displayOrder) ? raw.displayOrder : []),
+  };
+}
+
+// Validate the whole document before the first write (design D4). The returned
+// value is the document normalized for storage: repaired display orders, node
+// defaults, themes reduced to id/name/color. Nothing is written here.
+function validateBackup(doc) {
+  try {
+    if (!isPlainObject(doc)) rejectBackup("Le document n'est pas un objet JSON.");
+    if (doc.format !== BACKUP_FORMAT) rejectBackup("Ce fichier n'est pas une sauvegarde docdoc.");
+    if (doc.version !== BACKUP_VERSION) {
+      rejectBackup(`Version de sauvegarde non prise en charge : ${String(doc.version)}.`);
+    }
+    if (typeof doc.exportedAt !== 'string') rejectBackup("La date d'export de la sauvegarde est absente.");
+    if (!Array.isArray(doc.themes) || !Array.isArray(doc.domains) || !Array.isArray(doc.archives)) {
+      rejectBackup('La sauvegarde doit contenir les listes themes, domains et archives.');
+    }
+
+    const themes = [];
+    const themeIds = new Set();
+    for (const raw of doc.themes) {
+      if (!isPlainObject(raw)) rejectBackup("Un thème de la sauvegarde n'est pas un objet.");
+      if (typeof raw.id !== 'string' || !raw.id) rejectBackup("Un thème de la sauvegarde n'a pas d'identifiant.");
+      if (themeIds.has(raw.id)) rejectBackup(`Identifiant de thème dupliqué dans la sauvegarde : « ${raw.id} ».`);
+      if (typeof raw.name !== 'string' || !raw.name) rejectBackup(`Le thème « ${raw.id} » n'a pas de nom.`);
+      if (typeof raw.color !== 'string' || !raw.color) {
+        rejectBackup(`Le thème « ${raw.name} » n'a pas de couleur.`);
+      }
+      themeIds.add(raw.id);
+      themes.push({ id: raw.id, name: raw.name, color: raw.color });
+    }
+
+    const ids = new Set();
+    const activeSlugs = new Set();
+    const domains = doc.domains.map((raw) => validateBackupDomain(raw, 'domain', themeIds, ids, activeSlugs));
+    const archives = doc.archives.map((raw) => validateBackupDomain(raw, 'archive', themeIds, ids, activeSlugs));
+    return { ok: true, value: { themes, domains, archives } };
+  } catch (err) {
+    if (err instanceof BackupValidationError) return { ok: false, message: err.message };
+    throw err;
+  }
+}
+
+async function exportBackup(space) {
+  await space.writeQueue;
+  const themes = space.themes.map(({ id, name, color }) => ({ id, name, color }));
+  const domains = [...space.domains.values()]
+    .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name) || a.id.localeCompare(b.id))
+    .map((domain) => {
+      domain.displayOrder = ensureDisplayOrder(domain.projects, domain.displayOrder);
+      return domainPayload(domain);
+    });
+  const archives = (await readArchivedDomains(space)).map((domain) => domainPayload(domain));
+  return {
+    format: BACKUP_FORMAT,
+    version: BACKUP_VERSION,
+    exportedAt: new Date().toISOString(),
+    themes,
+    domains,
+    archives,
+  };
+}
+
+// Whole-space replacement (design D3). New objects are written before the
+// objects absent from the file are deleted, so an interruption never removes
+// data that has no copy in the backup; re-running the same file finishes the job
+// (design D5). Only the three data families of the account are addressed here:
+// account.json, passkeys and the lookup indexes are never touched.
+async function restoreBackup(space, backup) {
+  const userId = space.userId;
+  await space.writeQueue;
+  const currentDomainKeys = await storage.listDomainKeys(userId);
+  const currentArchiveKeys = await storage.listArchiveKeys(userId);
+  const targetDomainKeys = new Set(backup.domains.map((domain) => storage.domainKey(userId, domain.id)));
+  const targetArchiveKeys = new Set(backup.archives.map((archive) => storage.archiveKey(userId, archive.id)));
+
+  await storage.writeJson(storage.themesKey(userId), backup.themes);
+  for (const domain of backup.domains) {
+    await storage.writeJson(storage.domainKey(userId, domain.id), domain);
+  }
+  for (const archive of backup.archives) {
+    await storage.writeJson(storage.archiveKey(userId, archive.id), archive);
+  }
+  for (const key of currentDomainKeys) {
+    if (!targetDomainKeys.has(key)) await storage.deleteObject(key);
+  }
+  for (const key of currentArchiveKeys) {
+    if (!targetArchiveKeys.has(key)) await storage.deleteObject(key);
+  }
+  return { themes: backup.themes.length, domains: backup.domains.length, archives: backup.archives.length };
 }
 
 /* ------------------------------------------------------------------ */
@@ -884,11 +1156,8 @@ function expandIdsFor(domain, req) {
 // `<ul class="children">` of the previous rendering are gone.
 function renderLine(entry, slug, collapsed) {
   const node = entry.node;
-  const statusCls =
-    node.status === 'in_progress' ? 'status-in-progress' : node.status === 'done' ? 'status-done' : '';
+  const statusCls = statusClass(node.status);
 
-  const STATUS_ICONS = { todo: '○', in_progress: '◐', done: '●' };
-  const STATUS_LABELS = { todo: 'À faire', in_progress: 'En cours', done: 'Terminé' };
   // The scope is read from the live selection at request time: if the head line
   // has one of its sub-lines selected ('subtree'), the status cascades to the
   // whole displayed subtree; otherwise the selection is narrowed to the head
@@ -907,6 +1176,8 @@ function renderLine(entry, slug, collapsed) {
     '<div class="menu">' +
     statusBtn('todo') +
     statusBtn('in_progress') +
+    statusBtn('waiting') +
+    statusBtn('someday') +
     statusBtn('done') +
     `<button type="button" class="menu-item copy-link" title="Copier le lien">🔗</button>` +
     `<button type="button" class="menu-item rename" title="Renommer">✎</button>` +
@@ -992,47 +1263,48 @@ function renderOutline(domain, slug, expandIds) {
   return `<ul id="outline" class="outline">${lines.join('')}</ul>`;
 }
 
-function domainLink(d, activeSlug) {
-  const cls = d.slug === activeSlug ? 'sidebar-link active' : 'sidebar-link';
-  return `<a class="${cls}" href="/domaine/${d.slug}">${escapeHtml(d.name)}</a>`;
+// One row of the domain list: the navigation link plus its two reorder
+// controls. The controls are ordinary POST forms, so the list works without
+// JavaScript and both entry points write the same `order` as the administration
+// page. They are disabled at the ends rather than sending a no-op request.
+function sidebarMoveForm(domain, direction, enabled, returnTo) {
+  const label = direction === 'up' ? 'Monter' : 'Descendre';
+  const named = `${label} « ${escapeHtml(domain.name)} »`;
+  return (
+    `<form method="post" action="/api/domains/${domain.id}/move" class="sidebar-move">` +
+    `<input type="hidden" name="dir" value="${direction}">` +
+    `<input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}">` +
+    `<button type="submit" class="btn-mini sidebar-move-btn" title="${named}" aria-label="${named}"${enabled ? '' : ' disabled'}>${direction === 'up' ? '↑' : '↓'}</button>` +
+    '</form>'
+  );
 }
 
-function renderSidebarNav(space, activeSlug) {
-  // Group domains by theme, then list domains that carry no theme label under a
-  // "Sans thème" section. A domain carrying several theme labels is listed under
-  // each corresponding theme group (cross-cutting view). The sidebar is a pure
-  // navigation surface: themes and domains are managed on /administration.
-  // Rendered on its own so a labels-bar swap can refresh it out-of-band.
-  const themeGroups = space.themes
-    .map((t) => {
-      const members = space.domainList
-        .filter((d) => d.labels.includes(t.id))
-        .map((d) => domainLink(d, activeSlug))
-        .join('');
-      return (
-        '<div class="theme-group">' +
-        `<div class="theme-group-header">` +
-        `<span class="theme-dot" style="background:${escapeHtml(t.color)}"></span>` +
-        `<span class="theme-group-name">${escapeHtml(t.name)}</span>` +
-        `</div>` +
-        `<div class="theme-group-domains">${members || '<span class="sidebar-muted">Aucun domaine</span>'}</div>` +
-        '</div>'
-      );
-    })
+function sidebarDomainRow(domain, activeSlug, returnTo, index, total) {
+  const active = domain.slug === activeSlug;
+  const link =
+    `<a class="sidebar-link${active ? ' active' : ''}" href="/domaine/${domain.slug}">` +
+    `${escapeHtml(domain.name)}</a>`;
+  return (
+    '<div class="sidebar-domain">' +
+    link +
+    '<span class="sidebar-order">' +
+    sidebarMoveForm(domain, 'up', index > 0, returnTo) +
+    sidebarMoveForm(domain, 'down', index < total - 1, returnTo) +
+    '</span>' +
+    '</div>'
+  );
+}
+
+function renderSidebarNav(space, activeSlug, returnTo) {
+  // A single-level navigation list: one entry per active domain, in the manual
+  // order carried by `space.domainList`. Themes are labels managed on the domain
+  // page and in the administration; they no longer group the panel, so a domain
+  // carrying several themes appears exactly once. The two move controls of a
+  // row are the only mutation the panel offers.
+  const rows = space.domainList
+    .map((d, index) => sidebarDomainRow(d, activeSlug, returnTo, index, space.domainList.length))
     .join('');
-
-  const untagged = space.domainList.filter((d) => d.labels.length === 0);
-  const untaggedGroup = untagged.length
-    ? `<div class="theme-group">
-        <div class="theme-group-header">
-          <span class="theme-dot" style="background:#9ca3af"></span>
-          <span class="theme-group-name">Sans thème</span>
-        </div>
-        <div class="theme-group-domains">${untagged.map((d) => domainLink(d, activeSlug)).join('')}</div>
-      </div>`
-    : '';
-
-  return themeGroups + untaggedGroup || '<p class="sidebar-empty">Aucun domaine</p>';
+  return rows || '<p class="sidebar-empty">Aucun domaine</p>';
 }
 
 function renderSidebar(space, activeSlug, opts = {}) {
@@ -1040,12 +1312,24 @@ function renderSidebar(space, activeSlug, opts = {}) {
   const adminActive = Boolean(opts.admin);
   const helpActive = Boolean(opts.help);
 
+  // The reorder forms return to the page they were submitted from, so a move
+  // never navigates away from what the user is reading.
+  const currentPath = homeActive
+    ? '/'
+    : adminActive
+      ? '/administration'
+      : helpActive
+        ? '/aide'
+        : activeSlug
+          ? `/domaine/${activeSlug}`
+          : '/';
+
   return `<aside class="sidebar" id="sidebar">
       <div class="sidebar-top" id="sidebar-top">
         <a class="sidebar-link sidebar-home${homeActive ? ' active' : ''}" href="/"${homeActive ? ' aria-current="page"' : ''}>Accueil</a>
       </div>
       <div class="sidebar-header">Domaines</div>
-      <nav class="sidebar-nav" id="sidebar-nav">${renderSidebarNav(space, activeSlug)}</nav>
+      <nav class="sidebar-nav" id="sidebar-nav">${renderSidebarNav(space, activeSlug, currentPath)}</nav>
       <div class="sidebar-footer">
         <nav class="sidebar-extra">
           <a class="sidebar-link sidebar-admin${adminActive ? ' active' : ''}" href="/administration"${adminActive ? ' aria-current="page"' : ''}>Administration</a>
@@ -1165,38 +1449,48 @@ function ancestorChain(index, id) {
   return chain;
 }
 
-// The in-progress leaf lines of every domain, in the order the sidebar lists the
-// domains and, inside a domain, in the outline's display order. Only a line
-// without children is listed: a parent is a grouping, not work to do, and listing
-// it would crowd out the leaves it contains. The display order is repaired first,
-// so a leaf is listed even when its persisted order was incomplete. The function
-// only reads the in-memory space: the homepage must not create the default
-// project of an empty domain nor persist anything.
-function homeTasks(space) {
-  const tasks = [];
+// The GTD rubrique of a leaf line, or null when the line is not listed on the
+// home board. `todo` and `in_progress` share "À faire"; done and lines with
+// children never appear. The board only reads the in-memory space: a GET must
+// not create the default project of an empty domain nor persist anything.
+function homeRubrique(node) {
+  if (!node || (node.children && node.children.length)) return null;
+  if (node.status === 'todo' || node.status === 'in_progress') return 'todo';
+  if (node.status === 'waiting' || node.status === 'someday') return node.status;
+  return null;
+}
+
+// Group every listed leaf into the three rubriques, in sidebar domain order and,
+// inside a domain, in the outline's display order. The order is recomputed on
+// every render: a move changes the rubrique, not a manual position.
+function homeBoard(space) {
+  const buckets = { todo: [], waiting: [], someday: [] };
   for (const summary of space.domainList) {
     const domain = space.domains.get(summary.id);
     if (!domain) continue;
     const index = indexOutline(domain.projects);
     for (const id of ensureDisplayOrder(domain.projects, domain.displayOrder)) {
       const entry = index.get(id);
-      if (!entry || entry.node.status !== 'in_progress') continue;
-      if (entry.node.children && entry.node.children.length) continue;
-      tasks.push({ domain, node: entry.node, ancestors: ancestorChain(index, entry.node.id) });
+      if (!entry) continue;
+      const rubrique = homeRubrique(entry.node);
+      if (!rubrique) continue;
+      buckets[rubrique].push({
+        domain,
+        node: entry.node,
+        ancestors: ancestorChain(index, entry.node.id),
+      });
     }
   }
-  return tasks;
+  return buckets;
 }
 
-// One entry per in-progress leaf. The whole row is the existing deep link: it
-// opens the domain with the task's ancestors expanded (`?reveal`), scrolls to the
-// line and highlights it (`#node-<id>`). The title occupies the first line; the
-// domain name and the chain of parent tasks occupy the second one, which keeps
-// two leaves with the same title distinguishable even inside one domain. Every
-// title is plain text, because an inline task link would nest an anchor inside
-// the entry's anchor.
-function homeTaskEntry(domain, node, ancestors) {
+// One card of the home board. The title is the existing deep link (the only
+// clickable text); the grip and the rubrique menu are separate controls so a
+// drag never follows the link. The title is plain text because an inline task
+// link would nest an anchor inside the card's anchor.
+function homeTaskCard(domain, node, ancestors, rubrique) {
   const href = `/domaine/${domain.slug}?reveal=${node.id}#node-${node.id}`;
+  const title = escapeHtml(titleLabel(node.title));
   const chain = ancestors
     .map(
       (ancestor) =>
@@ -1206,32 +1500,83 @@ function homeTaskEntry(domain, node, ancestors) {
         `</span>`
     )
     .join('');
+  const badge = node.status === 'in_progress' ? '<span class="gtd-badge">En cours</span>' : '';
+  const statusPath = `/domaine/${domain.slug}/api/nodes/${node.id}/status`;
+  const moveChoice = (target) => {
+    if (target.id === rubrique) {
+      return `<button type="button" class="gtd-move-item current" disabled aria-current="true">${target.label}</button>`;
+    }
+    const vals = escapeHtml(
+      JSON.stringify({
+        status: target.id === 'todo' ? 'todo' : target.id,
+        scope: 'head',
+        vue: 'accueil',
+      })
+    );
+    return (
+      `<button type="button" class="gtd-move-item" hx-post="${escapeHtml(statusPath)}"` +
+      ` hx-vals='${vals}' hx-target="#home-board" hx-swap="outerHTML">${target.label}</button>`
+    );
+  };
   return (
-    `<li><a class="home-task" href="${escapeHtml(href)}">` +
-    `<span class="home-task-title">${escapeHtml(titleLabel(node.title))}</span>` +
-    `<span class="home-task-context">` +
+    `<li class="gtd-card" id="gtd-node-${escapeHtml(node.id)}" draggable="true"` +
+    ` data-domain="${escapeHtml(domain.slug)}" data-node="${escapeHtml(node.id)}" data-rubrique="${rubrique}">` +
+    `<button class="gtd-grip" type="button" draggable="true" title="Déplacer la tâche" aria-label="Déplacer « ${title} »">⠿</button>` +
+    `<div class="gtd-card-body">` +
+    `<a class="gtd-card-title" href="${escapeHtml(href)}" draggable="false">${title}</a>` +
+    `<span class="home-task-context gtd-card-context">` +
     `<span class="home-task-domain">${escapeHtml(domain.name)}</span>` +
     `${chain}` +
     `</span>` +
-    `</a></li>`
+    badge +
+    `</div>` +
+    `<details class="gtd-move">` +
+    `<summary class="gtd-move-summary" title="Changer de rubrique" aria-label="Changer la rubrique de « ${title} »">⋯</summary>` +
+    `<div class="gtd-move-menu">` +
+    `<span class="gtd-move-label">Changer de rubrique</span>` +
+    GTD_RUBRIQUES.map(moveChoice).join('') +
+    `</div>` +
+    `</details>` +
+    `</li>`
   );
 }
 
+// The board fragment is also the response of a status mutation coming from the
+// home page (`vue=accueil`), so htmx replaces it in one piece. Columns are always
+// rendered; an empty one shows a message instead of a list.
+function renderHomeBoard(space) {
+  const buckets = homeBoard(space);
+  const columns = GTD_RUBRIQUES.map((rubrique) => {
+    const entries = buckets[rubrique.id];
+    const cards = entries
+      .map(({ domain, node, ancestors }) => homeTaskCard(domain, node, ancestors, rubrique.id))
+      .join('');
+    const body = cards
+      ? `<ul class="gtd-list">${cards}</ul>`
+      : '<p class="gtd-empty">Aucune tâche</p>';
+    return (
+      `<section class="gtd-column" data-gtd="${rubrique.id}" aria-labelledby="gtd-${rubrique.id}-heading">` +
+      `<header class="gtd-column-head"><h2 id="gtd-${rubrique.id}-heading">${rubrique.label}` +
+      ` <span class="gtd-count">${entries.length}</span></h2></header>` +
+      body +
+      `</section>`
+    );
+  }).join('');
+  return `<div id="home-board" class="gtd-board" aria-label="Rubriques GTD">${columns}</div>`;
+}
+
 function renderHomePage(space) {
-  const tasks = homeTasks(space);
   let content;
   if (!space.domainList.length) {
     content =
       '<div class="empty-state"><h2>Aucun domaine</h2><p>Créez un domaine depuis la page <a href="/administration">Administration</a> pour regrouper vos projets.</p></div>';
-  } else if (!tasks.length) {
-    content =
-      '<div class="empty-state"><h2>Aucune tâche en cours</h2><p>Aucune tâche sans sous-tâche n’est marquée « En cours ». Ouvrez le menu d’une ligne sans sous-tâche et choisissez « En cours » pour la retrouver ici.</p></div>';
   } else {
-    content = `<ul class="home-tasks">${tasks
-      .map(({ domain, node, ancestors }) => homeTaskEntry(domain, node, ancestors))
-      .join('')}</ul>`;
+    // The announcer lives outside the board so it survives each htmx swap.
+    content =
+      renderHomeBoard(space) +
+      '<p id="gtd-announcer" class="sr-only" aria-live="polite"></p>';
   }
-  return renderShell(space, content, null, { title: 'Tâches en cours', home: true });
+  return renderShell(space, content, null, { title: 'Tableau de bord', home: true });
 }
 
 /* ------------------------------------------------------------------ */
@@ -1388,8 +1733,9 @@ function renderArchiveRows(space, archives) {
     .join('');
 }
 
-async function renderAdminPage(space) {
+async function renderAdminPage(space, opts = {}) {
   const archives = await listArchivedDomains(space);
+  const restored = Boolean(opts.restored);
 
   const themesSection = `<section class="admin-section" id="admin-themes">
     <h2>Thèmes</h2>
@@ -1440,9 +1786,31 @@ async function renderAdminPage(space) {
     </details>
   </section>`;
 
+  const backupSection = `<section class="admin-section" id="admin-backup">
+    <h2>Sauvegarde</h2>
+    ${
+      restored
+        ? '<p class="admin-notice" role="status">Sauvegarde restaurée. Vos thèmes, domaines et archives ont été remplacés par le contenu du fichier.</p>'
+        : ''
+    }
+    <p class="admin-hint">Le fichier JSON contient vos thèmes, vos domaines actifs et vos archives. Il ne contient ni votre adresse email ni vos passkeys.</p>
+    <p class="admin-backup-export"><a class="btn" href="/api/backup" download>Exporter mes données</a></p>
+    <noscript><p class="admin-empty">La restauration nécessite JavaScript ; l'export reste disponible sans JavaScript.</p></noscript>
+    <details class="admin-restore">
+      <summary>Restaurer une sauvegarde</summary>
+      <form id="restore-form" method="post" action="/api/restore?confirm=replace">
+        <label for="restore-file">Fichier de sauvegarde (.json)</label>
+        <input type="file" id="restore-file" name="backup" accept=".json,application/json" required>
+        <label class="restore-confirm"><input type="checkbox" id="restore-confirm" required> Je comprends que mes thèmes, domaines et archives actuels seront remplacés par le contenu du fichier.</label>
+        <button type="submit" class="btn danger" disabled>Remplacer mes données</button>
+        <p id="restore-status" role="status"></p>
+      </form>
+    </details>
+  </section>`;
+
   return renderShell(
     space,
-    `<div class="admin">${themesSection}${domainsSection}${archivesSection}</div>`,
+    `<div class="admin">${themesSection}${domainsSection}${archivesSection}${backupSection}</div>`,
     null,
     { title: 'Administration', admin: true }
   );
@@ -1469,8 +1837,9 @@ function renderGuidePage(space) {
     <p class="guide-intro">Cette page rassemble les gestes disponibles dans l'outline, du plus courant au plus spécifique.</p>
 
     <section class="guide-section">
-      <h2>Retrouver les tâches en cours</h2>
-      <p>La page d'accueil, à la racine, rassemble les tâches marquées « En cours » qui n'ont pas de sous-tâche, tous domaines confondus. Sur chaque entrée, la seconde ligne rappelle le nom du domaine puis la hiérarchie de ses tâches mères. Cliquez sur une tâche pour l'ouvrir dans son domaine, avec ses tâches mères dépliées et la ligne mise en évidence.</p>
+      <h2>Classer les tâches par rubrique GTD</h2>
+      <p>La page d'accueil, à la racine, présente trois rubriques : « À faire » pour les tâches à faire ou déjà commencées, « En attente » pour celles qui dépendent d'un tiers, et « Un jour peut-être » pour les idées mises de côté. Une tâche feuille non terminée appartient à une seule rubrique ; les tâches terminées et les lignes mères ne sont pas listées.</p>
+      <p>Glissez une carte d'une rubrique à une autre, à la souris ou avec la poignée sur un écran tactile. Le menu « Changer de rubrique » de chaque carte fait la même chose au clavier. Cliquez sur le titre d'une carte pour ouvrir la tâche dans son domaine, avec ses tâches mères dépliées et la ligne mise en évidence.</p>
     </section>
 
     <section class="guide-section">
@@ -1526,8 +1895,20 @@ function renderGuidePage(space) {
     </section>
 
     <section class="guide-section">
+      <h2>Classer les domaines</h2>
+      <p>Chaque domaine du panneau porte deux flèches ↑ et ↓ : elles le déplacent d'un cran dans la liste. Cet ordre est le même que celui de la page Administration et que celui des tâches en cours sur la page d'accueil.</p>
+      <p>Les thèmes restent des étiquettes : ils ne regroupent plus les domaines du panneau.</p>
+    </section>
+
+    <section class="guide-section">
       <h2>Gérer les thèmes et les domaines</h2>
       <p>Les thèmes et les domaines se gèrent depuis la page <a href="/administration">Administration</a>, en pied du panneau.</p>
+    </section>
+
+    <section class="guide-section">
+      <h2>Sauvegarder et restaurer ses données</h2>
+      <p>La section « Sauvegarde » de la page <a href="/administration">Administration</a> permet de télécharger un fichier JSON contenant vos thèmes, vos domaines actifs et vos archives. Il ne contient ni votre adresse email ni vos passkeys : votre connexion n'est pas concernée.</p>
+      <p>La restauration remplace l'intégralité de vos thèmes, de vos domaines et de vos archives par le contenu du fichier ; les objets absents du fichier sont supprimés. Exportez d'abord vos données actuelles si vous n'êtes pas sûr du fichier à restaurer.</p>
     </section>
 
     <p class="guide-version">Version ${escapeHtml(version)}</p>
@@ -1604,11 +1985,71 @@ app.get('/', (req, res) => {
 // "no domain" empty state instead of listing tasks).
 app.get('/administration', async (req, res) => {
   try {
-    res.type('html').send(await renderAdminPage(req.space));
+    res
+      .type('html')
+      .send(await renderAdminPage(req.space, { restored: req.query.restaure === 'ok' }));
   } catch (err) {
     console.error('[docdoc] page d\u2019administration :', err.message);
     res.status(500).send('Administration indisponible');
   }
+});
+
+// Download the whole space as a portable JSON document. The response is the
+// backup itself, so it is never cached and carries an attachment filename.
+app.get('/api/backup', async (req, res) => {
+  try {
+    const backup = await exportBackup(req.space);
+    const date = new Date().toISOString().slice(0, 10);
+    res.set('Content-Type', 'application/json; charset=utf-8');
+    res.set('Content-Disposition', `attachment; filename="docdoc-sauvegarde-${date}.json"`);
+    res.set('Cache-Control', 'no-store');
+    res.send(JSON.stringify(backup, null, 2) + '\n');
+  } catch (err) {
+    console.error('[docdoc] export de sauvegarde :', err.message);
+    res.status(500).type('text/plain').send("L'export de la sauvegarde a échoué.");
+  }
+});
+
+// Restore replaces the whole space (themes, active domains, archives) from a
+// backup document. The confirmation is required both in the UI and here, so an
+// accidental POST cannot wipe an account. The body is parsed as raw JSON by the
+// dedicated parser mounted above; an invalid document is rejected before any
+// write.
+app.post('/api/restore', async (req, res) => {
+  if (req.query.confirm !== 'replace') {
+    return res.status(422).type('text/plain').send('Confirmation de restauration requise.');
+  }
+  if (!req.is('application/json')) {
+    return res.status(415).type('text/plain').send('La restauration exige un corps application/json.');
+  }
+  if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+    return res.status(400).type('text/plain').send('Le fichier de sauvegarde est vide ou illisible.');
+  }
+  if (req.body.length > BACKUP_MAX_BYTES) {
+    return res.status(413).type('text/plain').send('Sauvegarde trop volumineuse (10 Mo maximum).');
+  }
+
+  let doc;
+  try {
+    doc = JSON.parse(req.body.toString('utf8').replace(/^\uFEFF/, ''));
+  } catch {
+    return res.status(400).type('text/plain').send("Le fichier de sauvegarde n'est pas du JSON valide.");
+  }
+
+  const validation = validateBackup(doc);
+  if (!validation.ok) return res.status(422).type('text/plain').send(validation.message);
+
+  try {
+    await restoreBackup(req.space, validation.value);
+  } catch (err) {
+    console.error('[docdoc] restauration de sauvegarde :', err.message);
+    return res.status(500).type('text/plain').send('La restauration a échoué. Réessayez avec le même fichier.');
+  } finally {
+    // Even a failed multi-object write can have changed storage: the next
+    // request must reload the space instead of serving the previous cache.
+    invalidateSpace(req.session.userId);
+  }
+  return res.redirect(303, '/administration?restaure=ok#admin-backup');
 });
 
 // The user guide is static prose rendered from the shell. Like the
@@ -1722,6 +2163,11 @@ app.post('/domaine/:slug/api/nodes/:id/status', (req, res) => {
   const scope = req.body.scope === 'head' ? 'head' : 'subtree';
   if (!setStatus(domain.projects, req.params.id, req.body.status, scope)) return res.status(400).send('Statut invalide');
   persistDomain(req.space, domain);
+  // A move on the home board asks for the board fragment instead of the outline:
+  // same mutation, same persistence, only the rendered response differs.
+  if (req.body.vue === 'accueil' || req.query.vue === 'accueil') {
+    return res.type('html').send(renderHomeBoard(req.space));
+  }
   res.type('html').send(renderOutline(domain, domain.slug, expandIdsFor(domain, req)));
 });
 
@@ -1811,7 +2257,10 @@ app.post('/api/domains/:id/move', (req, res) => {
   const direction = req.body.dir === 'up' ? 'up' : req.body.dir === 'down' ? 'down' : null;
   if (!direction) return res.status(400).send('Direction requise');
   moveDomain(req.space, domain, direction);
-  redirectAfter(req, res, '/administration');
+  // The sidebar's forms carry the page they were submitted from, so a move
+  // leaves the user there; the administration's forms keep `/administration`.
+  // Anything but a local path falls back to the administration page.
+  redirectAfter(req, res, localPath(req.body.returnTo) || '/administration');
 });
 
 /* ------------------------------------------------------------------ */
@@ -1901,10 +2350,9 @@ app.post('/domaine/:slug/api/labels', (req, res) => {
   rebuildDomainList(req.space);
   persistDomain(req.space, domain);
   if (req.headers['hx-request']) {
-    // Bar + sidebar in the same response: labels are the sidebar's grouping key,
-    // so a fresh bar with a stale sidebar would be a visible contradiction.
-    const nav = `<nav class="sidebar-nav" id="sidebar-nav" hx-swap-oob="outerHTML">${renderSidebarNav(req.space, domain.slug)}</nav>`;
-    return res.type('html').send(renderLabelsBar(req.space, domain) + nav);
+    // The sidebar is a flat domain list: a label no longer changes it, so only
+    // the bar needs swapping.
+    return res.type('html').send(renderLabelsBar(req.space, domain));
   }
   redirectAfter(req, res, `/domaine/${domain.slug}`);
 });
