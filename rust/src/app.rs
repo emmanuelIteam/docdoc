@@ -2706,6 +2706,19 @@ mod http_tests {
         assert_eq!(status, StatusCode::OK);
         assert!(someday.contains("data-gtd=\"someday\""));
 
+        let (status, _, running) = call(
+            &app,
+            "POST",
+            &format!("/domaine/maison/api/nodes/{node_id}/status"),
+            Some(&cookie),
+            Some("application/json"),
+            "{\"status\":\"in_progress\",\"scope\":\"head\",\"vue\":\"accueil\"}",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(running.contains("data-gtd=\"in_progress\""));
+        assert!(running.contains(&format!("id=\"gtd-node-{node_id}\"")));
+
         let (status, _, _) = call(
             &app,
             "POST",
@@ -2720,7 +2733,7 @@ mod http_tests {
         let (status, _, home) = call(&app, "GET", "/", Some(&cookie), None, "").await;
         assert_eq!(status, StatusCode::OK);
         assert!(home.contains("Tableau de bord"));
-        assert!(home.contains("data-gtd=\"someday\""));
+        assert!(home.contains("data-gtd=\"in_progress\""));
         assert!(home.contains(&format!("id=\"gtd-node-{node_id}\"")));
     }
 

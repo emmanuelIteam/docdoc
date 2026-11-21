@@ -1127,7 +1127,7 @@ document.addEventListener('pointercancel', (e) => {
 /* the server-rendered fragment, so counts and empty states stay true.  */
 /* -------------------------------------------------------------------- */
 
-const GTD_LABELS = { todo: 'À faire', waiting: 'En attente', someday: 'Un jour peut-être' };
+const GTD_LABELS = { in_progress: 'En cours', waiting: 'En attente', someday: 'Un jour peut-être' };
 const GTD_TOUCH_THRESHOLD = 8;
 
 let gtdNativeDrag = null;
@@ -1206,7 +1206,7 @@ function gtdMoveCard(card, targetRubrique) {
     '/api/nodes/' +
     encodeURIComponent(card.dataset.node) +
     '/status';
-  const status = targetRubrique === 'todo' ? 'todo' : targetRubrique;
+  const status = targetRubrique;
   gtdBusy = true;
   gtdPendingMove = {
     nodeId: card.dataset.node,

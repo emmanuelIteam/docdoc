@@ -451,9 +451,10 @@ async function main() {
   assert.strictEqual(res.json.email, AUTHORIZED);
   res = await call('GET', '/');
   assert.strictEqual(res.status, 200, 'la racine sert la page d\u2019accueil');
-  // The adopted domain's only line is todo: the GTD board lists it in À faire.
+  // The adopted domain's only line is todo: the board lists no card for it.
   assert.match(res.text, /Tableau de bord/);
-  assert.match(res.text, /Réserver le camping/);
+  assert.doesNotMatch(res.text, /Réserver le camping/);
+  assert.match(res.text, /Aucune tâche/);
   res = await call('GET', '/domaine/voyages');
   assert.strictEqual(res.status, 200);
   assert.match(res.text, /Réserver le camping/);

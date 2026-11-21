@@ -480,15 +480,6 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
 .gtd-grip:focus-visible { background: #f4f4f5; color: var(--accent-dark); }
 .gtd-grip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .gtd-grip:active { cursor: grabbing; }
-.gtd-badge {
-  align-self: flex-start;
-  padding: .05rem .35rem;
-  border-radius: .3rem;
-  background: #eef2ff;
-  color: var(--accent-dark);
-  font-size: .68rem;
-  font-weight: 600;
-}
 .gtd-move {
   position: absolute;
   top: .3rem;

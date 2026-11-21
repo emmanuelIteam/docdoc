@@ -239,6 +239,8 @@ test('6.0 la page Aide est accessible depuis le pied du panneau, avant tout doma
   await expect(guide).toContainText('poignée');
   await expect(guide).toContainText('lien nommé');
   await expect(guide).toContainText('deux flèches');
+  await expect(guide).toContainText('En cours');
+  await expect(guide).toContainText('tâche à faire');
   await expect(guide).toContainText('ne regroupent plus');
   await expect(guide.locator('a[href="/administration"]')).toHaveCount(2);
 

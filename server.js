@@ -261,10 +261,10 @@ function genId() {
 
 const VALID_STATUSES = ['todo', 'in_progress', 'waiting', 'someday', 'done'];
 
-// The five line statuses and the three GTD rubriques of the home page. `todo`
-// and `in_progress` share the "À faire" rubrique because a started task is
-// still actionable; the other two map one-to-one. Keeping these tables at
-// module level lets the outline menu and the home board use the same labels.
+// The five line statuses and the three GTD rubriques of the home page. Each
+// rubrique maps one-to-one to a line status: only `in_progress`, `waiting` and
+// `someday` are listed, so a rubrique id is also the status written when a card
+// is dropped. `todo` stays a valid line status but is not part of the board.
 const STATUS_ICONS = { todo: '○', in_progress: '◐', waiting: '◷', someday: '✧', done: '●' };
 const STATUS_LABELS = {
   todo: 'À faire',
@@ -274,9 +274,9 @@ const STATUS_LABELS = {
   done: 'Terminé',
 };
 const GTD_RUBRIQUES = [
-  { id: 'todo', label: 'À faire', statuses: ['todo', 'in_progress'] },
-  { id: 'waiting', label: 'En attente', statuses: ['waiting'] },
-  { id: 'someday', label: 'Un jour peut-être', statuses: ['someday'] },
+  { id: 'in_progress', label: 'En cours' },
+  { id: 'waiting', label: 'En attente' },
+  { id: 'someday', label: 'Un jour peut-être' },
 ];
 
 function statusClass(status) {
@@ -1450,13 +1450,15 @@ function ancestorChain(index, id) {
 }
 
 // The GTD rubrique of a leaf line, or null when the line is not listed on the
-// home board. `todo` and `in_progress` share "À faire"; done and lines with
-// children never appear. The board only reads the in-memory space: a GET must
-// not create the default project of an empty domain nor persist anything.
+// home board. Only active statuses are listed: `in_progress`, `waiting` and
+// `someday`. `todo` (not started), done and lines with children never appear.
+// The board only reads the in-memory space: a GET must not create the default
+// project of an empty domain nor persist anything.
 function homeRubrique(node) {
   if (!node || (node.children && node.children.length)) return null;
-  if (node.status === 'todo' || node.status === 'in_progress') return 'todo';
-  if (node.status === 'waiting' || node.status === 'someday') return node.status;
+  if (node.status === 'in_progress' || node.status === 'waiting' || node.status === 'someday') {
+    return node.status;
+  }
   return null;
 }
 
@@ -1464,7 +1466,7 @@ function homeRubrique(node) {
 // inside a domain, in the outline's display order. The order is recomputed on
 // every render: a move changes the rubrique, not a manual position.
 function homeBoard(space) {
-  const buckets = { todo: [], waiting: [], someday: [] };
+  const buckets = { in_progress: [], waiting: [], someday: [] };
   for (const summary of space.domainList) {
     const domain = space.domains.get(summary.id);
     if (!domain) continue;
@@ -1500,7 +1502,6 @@ function homeTaskCard(domain, node, ancestors, rubrique) {
         `</span>`
     )
     .join('');
-  const badge = node.status === 'in_progress' ? '<span class="gtd-badge">En cours</span>' : '';
   const statusPath = `/domaine/${domain.slug}/api/nodes/${node.id}/status`;
   const moveChoice = (target) => {
     if (target.id === rubrique) {
@@ -1508,7 +1509,7 @@ function homeTaskCard(domain, node, ancestors, rubrique) {
     }
     const vals = escapeHtml(
       JSON.stringify({
-        status: target.id === 'todo' ? 'todo' : target.id,
+        status: target.id,
         scope: 'head',
         vue: 'accueil',
       })
@@ -1528,7 +1529,6 @@ function homeTaskCard(domain, node, ancestors, rubrique) {
     `<span class="home-task-domain">${escapeHtml(domain.name)}</span>` +
     `${chain}` +
     `</span>` +
-    badge +
     `</div>` +
     `<details class="gtd-move">` +
     `<summary class="gtd-move-summary" title="Changer de rubrique" aria-label="Changer la rubrique de « ${title} »">⋯</summary>` +
@@ -1838,7 +1838,7 @@ function renderGuidePage(space) {
 
     <section class="guide-section">
       <h2>Classer les tâches par rubrique GTD</h2>
-      <p>La page d'accueil, à la racine, présente trois rubriques : « À faire » pour les tâches à faire ou déjà commencées, « En attente » pour celles qui dépendent d'un tiers, et « Un jour peut-être » pour les idées mises de côté. Une tâche feuille non terminée appartient à une seule rubrique ; les tâches terminées et les lignes mères ne sont pas listées.</p>
+      <p>La page d'accueil, à la racine, présente trois rubriques : « En cours » pour les tâches commencées, « En attente » pour celles qui dépendent d'un tiers, et « Un jour peut-être » pour les idées mises de côté. Seules les tâches feuilles actives y figurent : une tâche à faire (non commencée) n'apparaît qu'après avoir été passée à « En cours » depuis son domaine, et les tâches terminées comme les lignes mères ne sont pas listées.</p>
       <p>Glissez une carte d'une rubrique à une autre, à la souris ou avec la poignée sur un écran tactile. Le menu « Changer de rubrique » de chaque carte fait la même chose au clavier. Cliquez sur le titre d'une carte pour ouvrir la tâche dans son domaine, avec ses tâches mères dépliées et la ligne mise en évidence.</p>
     </section>
 

@@ -609,20 +609,20 @@ pub fn render_page(
 /* ------------------------------------------------------------------ */
 
 const GTD_RUBRIQUES: [(&str, &str); 3] = [
-    ("todo", "À faire"),
+    ("in_progress", "En cours"),
     ("waiting", "En attente"),
     ("someday", "Un jour peut-être"),
 ];
 
 // The rubrique of a leaf line, or None when the line is not listed on the home
-// board. `todo` and `in_progress` share "À faire"; done and lines with children
-// never appear.
+// board. Only active statuses are listed: `in_progress`, `waiting` and
+// `someday`. `todo` (not started), done and lines with children never appear.
 fn home_rubrique(node: &crate::model::Node) -> Option<&'static str> {
     if !node.children.is_empty() {
         return None;
     }
     match node.status.as_str() {
-        "todo" | "in_progress" => Some("todo"),
+        "in_progress" => Some("in_progress"),
         "waiting" => Some("waiting"),
         "someday" => Some("someday"),
         _ => None,
@@ -651,7 +651,7 @@ fn home_tasks(space: &Space) -> [Vec<(Domain, crate::model::Node, Vec<IndexEntry
                 continue;
             };
             let bucket = match rubrique {
-                "todo" => 0,
+                "in_progress" => 0,
                 "waiting" => 1,
                 _ => 2,
             };
@@ -686,11 +686,6 @@ fn home_task_card(
             )
         })
         .collect::<String>();
-    let badge = if node.status == "in_progress" {
-        "<span class=\"gtd-badge\">En cours</span>"
-    } else {
-        ""
-    };
     let status_path = format!(
         "/domaine/{}/api/nodes/{}/status",
         escape_html(&domain.slug),
@@ -704,7 +699,7 @@ fn home_task_card(
                     "<button type=\"button\" class=\"gtd-move-item current\" disabled aria-current=\"true\">{label}</button>"
                 )
             } else {
-                let status = if *id == "todo" { "todo" } else { *id };
+                let status = *id;
                 let vals = escape_html(&format!(
                     "{{\"status\":\"{status}\",\"scope\":\"head\",\"vue\":\"accueil\"}}"
                 ));
@@ -723,7 +718,6 @@ fn home_task_card(
          <span class=\"home-task-domain\">{domain_name}</span>\
          {chain}\
          </span>\
-         {badge}\
          </div>\
          <details class=\"gtd-move\">\
          <summary class=\"gtd-move-summary\" title=\"Changer de rubrique\" aria-label=\"Changer la rubrique de « {title} »\">⋯</summary>\
@@ -740,7 +734,6 @@ fn home_task_card(
         href = escape_html(&href),
         domain_name = escape_html(&domain.name),
         chain = chain,
-        badge = badge,
         choices = choices,
     )
 }
@@ -1155,7 +1148,7 @@ pub fn render_guide_page(space: &Space, app_version: &str) -> String {
 
     <section class=\"guide-section\">
       <h2>Classer les tâches par rubrique GTD</h2>
-      <p>La page d'accueil, à la racine, présente trois rubriques : « À faire » pour les tâches à faire ou déjà commencées, « En attente » pour celles qui dépendent d'un tiers, et « Un jour peut-être » pour les idées mises de côté. Une tâche feuille non terminée appartient à une seule rubrique ; les tâches terminées et les lignes mères ne sont pas listées.</p>
+      <p>La page d'accueil, à la racine, présente trois rubriques : « En cours » pour les tâches commencées, « En attente » pour celles qui dépendent d'un tiers, et « Un jour peut-être » pour les idées mises de côté. Seules les tâches feuilles actives y figurent : une tâche à faire (non commencée) n'apparaît qu'après avoir été passée à « En cours » depuis son domaine, et les tâches terminées comme les lignes mères ne sont pas listées.</p>
       <p>Glissez une carte d'une rubrique à une autre, à la souris ou avec la poignée sur un écran tactile. Le menu « Changer de rubrique » de chaque carte fait la même chose au clavier. Cliquez sur le titre d'une carte pour ouvrir la tâche dans son domaine, avec ses tâches mères dépliées et la ligne mise en évidence.</p>
     </section>
 
@@ -1532,12 +1525,13 @@ mod tests {
                 "a1",
                 "Projet parent",
                 "in_progress",
-                vec![node("a1-1", "Tâche à faire 1", "in_progress", Vec::new())],
+                vec![node("a1-1", "Tâche en cours 1", "in_progress", Vec::new())],
             ),
             node("a2", "Tâche en attente <b>", "waiting", Vec::new()),
             node("a5", "Tâche à faire 2", "todo", Vec::new()),
             node("a3", "Tâche un jour", "someday", Vec::new()),
             node("a4", "Tâche terminée", "done", Vec::new()),
+            node("a6", "Tâche en cours 2", "in_progress", Vec::new()),
         ];
         let domain = Domain {
             id: "d1".to_string(),
@@ -1553,6 +1547,7 @@ mod tests {
                 "a5".to_string(),
                 "a3".to_string(),
                 "a4".to_string(),
+                "a6".to_string(),
             ],
         };
         let summary = DomainSummary {
@@ -1574,24 +1569,25 @@ mod tests {
 
         let html = render_home_board(&space);
         assert!(html.contains("id=\"home-board\""));
-        assert!(html.contains("data-gtd=\"todo\""));
+        assert!(html.contains("data-gtd=\"in_progress\""));
         assert!(html.contains("data-gtd=\"waiting\""));
         assert!(html.contains("data-gtd=\"someday\""));
         assert!(html.contains("id=\"gtd-node-a1-1\""));
         assert!(html.contains("id=\"gtd-node-a2\""));
         assert!(html.contains("id=\"gtd-node-a3\""));
-        assert!(html.contains("id=\"gtd-node-a5\""));
-        // The parent and the done line never become cards.
+        assert!(html.contains("id=\"gtd-node-a6\""));
+        // The parent, the done line and the todo line never become cards.
         assert!(!html.contains("id=\"gtd-node-a1\""));
         assert!(!html.contains("id=\"gtd-node-a4\""));
-        // The in-progress leaf carries the badge.
-        assert!(html.contains("gtd-badge"));
+        assert!(!html.contains("id=\"gtd-node-a5\""));
+        // The removed badge is no longer rendered.
+        assert!(!html.contains("gtd-badge"));
         // The title is escaped and the rubrique menu is present.
         assert!(html.contains("Tâche en attente &lt;b&gt;"));
         assert!(html.contains("gtd-move-menu"));
-        // The two todo leaves keep the outline order.
-        let first = html.find("Tâche à faire 1").unwrap();
-        let second = html.find("Tâche à faire 2").unwrap();
+        // The two in-progress leaves keep the outline order.
+        let first = html.find("Tâche en cours 1").unwrap();
+        let second = html.find("Tâche en cours 2").unwrap();
         assert!(first < second);
         // Counts are rendered per rubrique.
         assert!(html.contains("<span class=\"gtd-count\">2</span>"));
