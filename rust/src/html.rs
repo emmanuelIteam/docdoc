@@ -10,7 +10,7 @@ use crate::model::{
     ancestor_chain, ensure_display_order, find_node, hidden_node_ids, index_outline,
     rubrique_label, status_icon, status_label, Domain, DomainSummary, IndexEntry, Theme,
 };
-use crate::space::Space;
+use crate::space::{ordered_ids, Space};
 
 /* ------------------------------------------------------------------ */
 /* Échappement et liens de tâche                                       */
@@ -632,7 +632,7 @@ const GTD_RUBRIQUES: [&str; 2] = ["in_progress", "waiting"];
 // board. Only the two sub-states of "En cours" are listed: `in_progress`
 // ("À faire") and `waiting` ("En attente"). `todo` ("En projet"), `done`, legacy
 // `someday` (normalized to `todo`) and lines with children never appear.
-fn home_rubrique(node: &crate::model::Node) -> Option<&'static str> {
+pub(crate) fn home_rubrique(node: &crate::model::Node) -> Option<&'static str> {
     if !node.children.is_empty() {
         return None;
     }
@@ -643,8 +643,11 @@ fn home_rubrique(node: &crate::model::Node) -> Option<&'static str> {
     }
 }
 
-// Group every listed leaf into the two rubriques, in sidebar domain order and,
-// inside a domain, in the outline's display order.
+// Group every listed leaf into the two rubriques in the natural order — sidebar
+// domain order, then the outline's display order — then apply the account's
+// manual order. The natural order is what a rubrique shows until a card is
+// moved; the recorded order then takes precedence, and any card without a
+// recorded position is appended at the end.
 fn home_tasks(space: &Space) -> [Vec<(Domain, crate::model::Node, Vec<IndexEntry>)>; 2] {
     let mut buckets: [Vec<(Domain, crate::model::Node, Vec<IndexEntry>)>; 2] =
         [Vec::new(), Vec::new()];
@@ -671,16 +674,52 @@ fn home_tasks(space: &Space) -> [Vec<(Domain, crate::model::Node, Vec<IndexEntry
             buckets[bucket].push((domain.clone(), node, ancestor_chain(&index, &id)));
         }
     }
+    for (position, rubrique) in GTD_RUBRIQUES.iter().enumerate() {
+        let recorded = space.home_order.for_rubrique(rubrique);
+        buckets[position] = reorder_home_bucket(std::mem::take(&mut buckets[position]), recorded);
+    }
     buckets
 }
 
-// One card of the board. The title is the deep link; the grip and the rubrique
-// menu are separate controls so a drag never follows the link.
+fn reorder_home_bucket(
+    entries: Vec<(Domain, crate::model::Node, Vec<IndexEntry>)>,
+    recorded: &[String],
+) -> Vec<(Domain, crate::model::Node, Vec<IndexEntry>)> {
+    let natural: Vec<String> = entries.iter().map(|(_, node, _)| node.id.clone()).collect();
+    let ordered = ordered_ids(recorded, &natural);
+    let mut by_id: std::collections::HashMap<String, _> = entries
+        .into_iter()
+        .map(|entry| (entry.1.id.clone(), entry))
+        .collect();
+    ordered
+        .into_iter()
+        .filter_map(|id| by_id.remove(&id))
+        .collect()
+}
+
+/// Identifiants des cartes de la rubrique dans leur ordre affiché, après
+/// application de l'ordre manuel. Utilisé par la route de positionnement pour
+/// réinsérer une carte à l'index demandé.
+pub fn home_order_ids(space: &Space, rubrique: &str) -> Vec<String> {
+    let buckets = home_tasks(space);
+    let position = if rubrique == "waiting" { 1 } else { 0 };
+    buckets[position]
+        .iter()
+        .map(|(_, node, _)| node.id.clone())
+        .collect()
+}
+
+// One card of the board. The title is the deep link; the grip, the up/down
+// arrows and the rubrique menu are separate controls so a drag never follows
+// the link. The arrows request a one-step position and are disabled at the
+// ends; the menu appends to the target rubrique (no `index`).
 fn home_task_card(
     domain: &Domain,
     node: &crate::model::Node,
     ancestors: &[IndexEntry],
     rubrique: &str,
+    position: usize,
+    total: usize,
 ) -> String {
     let href = format!(
         "/domaine/{}?reveal={}#node-{}",
@@ -699,10 +738,33 @@ fn home_task_card(
             )
         })
         .collect::<String>();
-    let status_path = format!(
-        "/domaine/{}/api/nodes/{}/status",
-        escape_html(&domain.slug),
-        escape_html(&node.id)
+    let position_vals = |index: i64| {
+        escape_html(&format!(
+            "{{\"domain\":\"{}\",\"node\":\"{}\",\"rubrique\":\"{}\",\"index\":{}}}",
+            domain.slug, node.id, rubrique, index
+        ))
+    };
+    let order_button = |direction: &str, index: i64, disabled: bool, label: &str, glyph: &str| {
+        format!(
+                "<button type=\"button\" class=\"gtd-order-btn\" data-dir=\"{direction}\"\
+                 aria-label=\"{label}\" title=\"{label}\" hx-post=\"/api/home/order\"\
+                 hx-vals='{vals}' hx-target=\"#home-board\" hx-swap=\"outerHTML\"{disabled}>{glyph}</button>",
+                vals = position_vals(index),
+                disabled = if disabled { " disabled" } else { "" },
+            )
+    };
+    let up_label = format!("Monter « {} »", title);
+    let down_label = format!("Descendre « {} »", title);
+    let order = format!(
+        "<div class=\"gtd-order\">{}{}</div>",
+        order_button("up", position as i64 - 1, position == 0, &up_label, "↑"),
+        order_button(
+            "down",
+            position as i64 + 1,
+            position + 1 >= total,
+            &down_label,
+            "↓"
+        ),
     );
     let choices = GTD_RUBRIQUES
         .iter()
@@ -714,12 +776,12 @@ fn home_task_card(
                     "<button type=\"button\" class=\"gtd-move-item current\" disabled aria-current=\"true\">{label}</button>"
                 )
             } else {
-                let status = id;
                 let vals = escape_html(&format!(
-                    "{{\"status\":\"{status}\",\"scope\":\"head\",\"vue\":\"accueil\"}}"
+                    "{{\"domain\":\"{}\",\"node\":\"{}\",\"rubrique\":\"{}\"}}",
+                    domain.slug, node.id, id
                 ));
                 format!(
-                    "<button type=\"button\" class=\"gtd-move-item\" hx-post=\"{status_path}\" hx-vals='{vals}' hx-target=\"#home-board\" hx-swap=\"outerHTML\">{label}</button>"
+                    "<button type=\"button\" class=\"gtd-move-item\" hx-post=\"/api/home/order\" hx-vals='{vals}' hx-target=\"#home-board\" hx-swap=\"outerHTML\">{label}</button>"
                 )
             }
         })
@@ -734,6 +796,7 @@ fn home_task_card(
          {chain}\
          </span>\
          </div>\
+         {order}\
          <details class=\"gtd-move\">\
          <summary class=\"gtd-move-summary\" title=\"Changer de rubrique\" aria-label=\"Changer la rubrique de « {title} »\">⋯</summary>\
          <div class=\"gtd-move-menu\">\
@@ -749,6 +812,7 @@ fn home_task_card(
         href = escape_html(&href),
         domain_name = escape_html(&domain.name),
         chain = chain,
+        order = order,
         choices = choices,
     )
 }
@@ -762,7 +826,10 @@ pub fn render_home_board(space: &Space) -> String {
         let entries = &buckets[index];
         let cards = entries
             .iter()
-            .map(|(domain, node, ancestors)| home_task_card(domain, node, ancestors, id))
+            .enumerate()
+            .map(|(position, (domain, node, ancestors))| {
+                home_task_card(domain, node, ancestors, id, position, entries.len())
+            })
             .collect::<String>();
         let body = if cards.is_empty() {
             "<p class=\"gtd-empty\">Aucune tâche</p>".to_string()
@@ -1175,6 +1242,11 @@ pub fn render_guide_page(space: &Space, app_version: &str) -> String {
       <h2>Classer les tâches par rubrique GTD</h2>
       <p>La page d'accueil, à la racine, présente les deux sous-états d'« En cours » : « À faire » pour les tâches actionnables et « En attente » pour celles qui dépendent d'un tiers. Seules les tâches feuilles « À faire » ou « En attente » y figurent : une tâche « En projet » n'apparaît qu'après avoir été passée à « En cours » depuis son domaine, et les tâches terminées comme les lignes mères ne sont pas listées. Une tâche héritée « Un jour peut-être » est lue comme « En projet » et n'est donc pas listée.</p>
       <p>Glissez une carte d'une rubrique à l'autre, à la souris ou avec la poignée sur un écran tactile. Le menu « Changer de rubrique » de chaque carte fait la même chose au clavier. Cliquez sur le titre d'une carte pour ouvrir la tâche dans son domaine, avec ses tâches mères dépliées et la ligne mise en évidence.</p>
+    </section>
+
+    <section class=\"guide-section\">
+      <h2>Ordonner les tâches de l'accueil</h2>
+      <p>Dans chaque rubrique de la page d'accueil, glissez une carte au-dessus ou en dessous d'une autre pour la placer à cet endroit, à la souris comme avec la poignée sur un écran tactile. Les flèches ↑ et ↓ de chaque carte la déplacent d'un cran ; elles sont désactivées en première et en dernière position. Un dépôt dans l'autre rubrique place la carte à l'endroit déposé, tandis que le menu « Changer de rubrique » la place en fin de liste. L'ordre est mémorisé pour votre compte et conservé d'une visite à l'autre ; une nouvelle tâche rejoint la fin de sa rubrique.</p>
     </section>
 
     <section class=\"guide-section\">
@@ -1619,6 +1691,7 @@ mod tests {
             domains,
             domain_list: vec![summary],
             themes: Vec::new(),
+            home_order: Default::default(),
         };
 
         let html = render_home_board(&space);
@@ -1647,5 +1720,87 @@ mod tests {
         assert!(first < second);
         // Counts are rendered per rubrique.
         assert!(html.contains("<span class=\"gtd-count\">2</span>"));
+    }
+
+    #[test]
+    fn home_board_applies_the_manual_order_and_renders_order_controls() {
+        use crate::model::{Domain, DomainSummary, Node};
+        use crate::space::{HomeOrder, Space};
+        use std::collections::HashMap;
+
+        fn node(id: &str, title: &str) -> Node {
+            Node {
+                id: id.to_string(),
+                title: title.to_string(),
+                status: "in_progress".to_string(),
+                collapsed: false,
+                children: Vec::new(),
+                extra: serde_json::Map::new(),
+            }
+        }
+
+        let domain = Domain {
+            id: "d1".to_string(),
+            name: "Maison".to_string(),
+            slug: "maison".to_string(),
+            order: 0.0,
+            labels: Vec::new(),
+            projects: vec![node("a1", "A1"), node("a2", "A2"), node("a3", "A3")],
+            display_order: vec!["a1".to_string(), "a2".to_string(), "a3".to_string()],
+        };
+        let summary = DomainSummary {
+            id: domain.id.clone(),
+            name: domain.name.clone(),
+            slug: domain.slug.clone(),
+            order: 0.0,
+            labels: Vec::new(),
+        };
+        let mut domains = HashMap::new();
+        domains.insert(domain.id.clone(), domain);
+        let mut space = Space {
+            user_id: "u".to_string(),
+            email: "u@example.test".to_string(),
+            domains,
+            domain_list: vec![summary],
+            themes: Vec::new(),
+            home_order: HomeOrder {
+                in_progress: vec!["a3".to_string(), "inconnu".to_string(), "a1".to_string()],
+                waiting: Vec::new(),
+            },
+        };
+
+        let html = render_home_board(&space);
+        let a3 = html.find("id=\"gtd-node-a3\"").unwrap();
+        let a1 = html.find("id=\"gtd-node-a1\"").unwrap();
+        let a2 = html.find("id=\"gtd-node-a2\"").unwrap();
+        assert!(a3 < a1 && a1 < a2, "ordinateur manuel non appliqué");
+
+        let domain = &space.domains["d1"];
+        let first = home_task_card(domain, &domain.projects[0], &[], "in_progress", 0, 3);
+        let middle = home_task_card(domain, &domain.projects[1], &[], "in_progress", 1, 3);
+        let last = home_task_card(domain, &domain.projects[2], &[], "in_progress", 2, 3);
+        // Position 0 disables only "up"; the last position disables only "down".
+        assert!(first.contains("disabled>↑"));
+        assert!(!first.contains("disabled>↓"));
+        assert!(first.contains("&quot;index&quot;:1"));
+        assert!(!middle.contains("disabled>↑"));
+        assert!(!middle.contains("disabled>↓"));
+        assert!(middle.contains("&quot;index&quot;:0"));
+        assert!(middle.contains("&quot;index&quot;:2"));
+        assert!(last.contains("disabled>↓"));
+        assert!(!last.contains("disabled>↑"));
+        // The arrows name the task, and the rubrique menu uses the new route.
+        assert!(first.contains("aria-label=\"Monter « A1 »\""));
+        assert!(first.contains("aria-label=\"Descendre « A1 »\""));
+        assert!(first.contains("hx-post=\"/api/home/order\""));
+        assert!(first.contains("&quot;rubrique&quot;:&quot;waiting&quot;"));
+
+        // A malformed or absent order keeps the natural order.
+        space.home_order = HomeOrder::default();
+        let natural = render_home_board(&space);
+        let a1 = natural.find("id=\"gtd-node-a1\"").unwrap();
+        let a2 = natural.find("id=\"gtd-node-a2\"").unwrap();
+        let a3 = natural.find("id=\"gtd-node-a3\"").unwrap();
+        assert!(a1 < a2 && a2 < a3);
     }
 }

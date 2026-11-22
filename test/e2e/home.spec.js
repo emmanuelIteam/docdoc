@@ -616,9 +616,17 @@ test("1.7 une mère en cours et son enfant terminé ne sont pas listés", async 
 /* 1.8 Mouse drag between rubriques                                    */
 /* ------------------------------------------------------------------ */
 
-test('1.8 le glisser à la souris classe la carte et persiste le statut', async ({ browser }) => {
+test('1.8 le glisser classe ou réordonne, et un dépôt sans effet n’envoie rien', async ({ browser }) => {
   const { context, page } = await signedInPage(browser, stateA);
   await page.goto('/');
+
+  const orderRequests = [];
+  const statusRequests = [];
+  page.on('request', (request) => {
+    const pathname = new URL(request.url()).pathname;
+    if (pathname === '/api/home/order') orderRequests.push(pathname);
+    if (/\/status$/.test(pathname)) statusRequests.push(pathname);
+  });
 
   const drag = async (id, rubrique) => {
     await cardIn(page, 'in_progress', id)
@@ -637,19 +645,32 @@ test('1.8 le glisser à la souris classe la carte et persiste le statut', async 
   await expect(cardIn(page, 'in_progress', 'a3')).toHaveCount(1);
   expect(await statusOf(page, 'domaine-a', 'a3')).toBe('in_progress');
 
-  // Dropping a card on its own rubrique sends no mutation.
-  const statusRequests = [];
-  page.on('request', (request) => {
-    if (/\/status$/.test(new URL(request.url()).pathname)) statusRequests.push(request.url());
-  });
-  await cardIn(page, 'in_progress', 'a3').locator('.gtd-grip').dragTo(col(page, 'in_progress'));
+  // A drop at the current position sends no request at all.
+  orderRequests.length = 0;
+  statusRequests.length = 0;
+  await cardIn(page, 'in_progress', 'a3')
+    .locator('.gtd-grip')
+    .dragTo(cardIn(page, 'in_progress', 'a3'), { targetPosition: { x: 20, y: 2 } });
   await page.waitForTimeout(150);
+  expect(orderRequests).toEqual([]);
   expect(statusRequests).toEqual([]);
   expect(await statusOf(page, 'domaine-a', 'a3')).toBe('in_progress');
 
+  // Dropping elsewhere in the same rubrique changes only the order.
+  orderRequests.length = 0;
+  await cardIn(page, 'in_progress', 'a3')
+    .locator('.gtd-grip')
+    .dragTo(cardIn(page, 'in_progress', 'a1-1-1'), { targetPosition: { x: 20, y: 2 } });
+  await expect(cardIn(page, 'in_progress', 'a3')).toHaveCount(1);
+  expect(orderRequests.length).toBeGreaterThan(0);
+  expect(await statusOf(page, 'domaine-a', 'a3')).toBe('in_progress');
+
   // A drop outside the two rubriques is ignored too.
+  orderRequests.length = 0;
+  statusRequests.length = 0;
   await cardIn(page, 'in_progress', 'a3').locator('.gtd-grip').dragTo(page.locator('.topbar'));
   await page.waitForTimeout(150);
+  expect(orderRequests).toEqual([]);
   expect(statusRequests).toEqual([]);
   await expect(cardIn(page, 'in_progress', 'a3')).toHaveCount(1);
   expect(await statusOf(page, 'domaine-a', 'a3')).toBe('in_progress');
@@ -664,6 +685,7 @@ test('1.8 le glisser à la souris classe la carte et persiste le statut', async 
     document.dispatchEvent(new DragEvent('dragend', { bubbles: true }));
   });
   await page.waitForTimeout(100);
+  expect(orderRequests).toEqual([]);
   expect(statusRequests).toEqual([]);
   await expect(cardIn(page, 'in_progress', 'a3')).toHaveCount(1);
   expect(await statusOf(page, 'domaine-a', 'a3')).toBe('in_progress');
@@ -688,6 +710,11 @@ test('1.9 le menu de rubrique classe au clavier, restaure le focus et annonce', 
   await card.locator('.gtd-move-item', { hasText: 'En attente' }).click();
 
   await expect(cardIn(page, 'waiting', 'a1-1-1')).toHaveCount(1);
+  // The menu appends to the target rubrique.
+  await expect(col(page, 'waiting').locator('.gtd-card').last()).toHaveAttribute(
+    'id',
+    'gtd-node-a1-1-1'
+  );
   expect(await statusOf(page, 'domaine-a', 'a1-1-1')).toBe('waiting');
   expect(
     await page.evaluate(() => document.activeElement && document.activeElement.classList.contains('gtd-card-title'))

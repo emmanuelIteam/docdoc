@@ -158,10 +158,10 @@ perdues au redémarrage ; c'est le comportement de l'original.
 ## Basculer la production sur Rust
 
 Le portage lit et écrit **le même format** que la version Node : mêmes clés S3
-(`users/{userId}/domains/*.json`, `archive/`, `themes.json`, `account.json`),
-mêmes index d'email et de credential, même `publicKey` base64url du COSE. Les
-comptes, passkeys et domaines existants sont donc repris sans migration de
-données.
+(`users/{userId}/domains/*.json`, `archive/`, `themes.json`, `home-order.json`,
+`account.json`), mêmes index d'email et de credential, même `publicKey` base64url
+du COSE. Les comptes, passkeys et domaines existants sont donc repris sans
+migration de données.
 
 1. construire et publier l'image Rust à la place de l'image Node (même
    `APP_VERSION`, mêmes variables d'environnement, `HOST=0.0.0.0`) ;

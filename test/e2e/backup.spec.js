@@ -277,7 +277,12 @@ function flattenNodes(projects, out = []) {
 }
 
 function snapshot(doc) {
-  return JSON.stringify({ themes: doc.themes, domains: doc.domains, archives: doc.archives });
+  return JSON.stringify({
+    themes: doc.themes,
+    domains: doc.domains,
+    archives: doc.archives,
+    homeOrder: doc.homeOrder,
+  });
 }
 
 async function seedAccountA(context) {
@@ -344,6 +349,7 @@ test('6.1 l’export contient tout l’espace et rien d’un autre compte', asyn
   expect(doc.format).toBe('docdoc-backup');
   expect(doc.version).toBe(1);
   expect(typeof doc.exportedAt).toBe('string');
+  expect(doc.homeOrder).toEqual({ in_progress: [], waiting: [] });
 
   expect(doc.themes.map((theme) => theme.name)).toEqual(['Maison', 'Travail']);
   expect(doc.domains.map((domain) => domain.name).sort()).toEqual(['Alpha', 'Gamma']);
@@ -564,6 +570,14 @@ test('6.3 une sauvegarde invalide est refusée sans rien modifier', async ({ bro
   doc.domains[0].projects[0].id = '';
   await reject(doc, 422);
 
+  doc = clone();
+  doc.homeOrder = 'x';
+  await reject(doc, 422);
+
+  doc = clone();
+  doc.homeOrder.in_progress = [42];
+  await reject(doc, 422);
+
   // The body limit is enforced before the document is parsed.
   const oversized = 'x'.repeat(10 * 1024 * 1024 + 1);
   response = await api(context, '/api/restore?confirm=replace', {
@@ -643,6 +657,85 @@ test('6.4 la page Administration exporte, restaure et se dégrade sans JavaScrip
   await page.goto('/administration');
   await expect(page.locator('#admin-backup')).toBeVisible();
   await expect(page.locator('#admin-backup a[href="/api/backup"]')).toBeVisible();
+
+  await context.close();
+});
+
+/* ------------------------------------------------------------------ */
+/* 6.5 Manual order of the home board                                  */
+/* ------------------------------------------------------------------ */
+
+test('6.5 l’ordre manuel des rubriques est exporté, restauré et vidé sans homeOrder', async ({ browser }) => {
+  const context = await signedInBrowser(browser, stateA);
+  const page = await context.newPage();
+
+  const { doc: start } = await getBackup(context);
+  const alpha = findDomain(start, 'Alpha');
+  const gamma = findDomain(start, 'Gamma');
+  const alphaLeaf = flattenNodes(alpha.projects).find((node) => node.title === 'Sous-tâche');
+  expect(alphaLeaf).toBeTruthy();
+  const gammaRoot = gamma.projects[0];
+  await setStatus(context, alpha.slug, alphaLeaf.id, 'in_progress');
+  await setStatus(context, gamma.slug, gammaRoot.id, 'in_progress');
+
+  const moveChild = async (index) => {
+    const response = await api(context, '/api/home/order', {
+      method: 'POST',
+      form: {
+        domain: alpha.slug,
+        node: alphaLeaf.id,
+        rubrique: 'in_progress',
+        index: String(index),
+      },
+    });
+    expect(response.status()).toBe(200);
+  };
+
+  // Natural order is Alpha then Gamma: move Alpha's leaf after Gamma's root.
+  await moveChild(1);
+  const ordered = (await getBackup(context)).doc;
+  expect(ordered.homeOrder.in_progress).toEqual([gammaRoot.id, alphaLeaf.id]);
+
+  // Drift, then restore the ordered document.
+  await moveChild(0);
+  expect((await getBackup(context)).doc.homeOrder.in_progress).toEqual([
+    alphaLeaf.id,
+    gammaRoot.id,
+  ]);
+  let response = await api(context, '/api/restore?confirm=replace', {
+    method: 'POST',
+    data: JSON.stringify(ordered),
+    headers: { 'Content-Type': 'application/json' },
+  });
+  expect(response.status()).toBe(303);
+
+  const cards = page.locator('.gtd-column[data-gtd="in_progress"] .gtd-card-title');
+  await page.goto('/');
+  await expect(cards).toHaveText(['Projet Gamma', 'Sous-tâche']);
+
+  // A document without homeOrder restores an empty order, i.e. the natural one.
+  const legacy = JSON.parse(JSON.stringify(ordered));
+  delete legacy.homeOrder;
+  response = await api(context, '/api/restore?confirm=replace', {
+    method: 'POST',
+    data: JSON.stringify(legacy),
+    headers: { 'Content-Type': 'application/json' },
+  });
+  expect(response.status()).toBe(303);
+  await page.goto('/');
+  await expect(cards).toHaveText(['Sous-tâche', 'Projet Gamma']);
+
+  // A malformed order is refused without touching the space.
+  const malformed = JSON.parse(JSON.stringify(ordered));
+  malformed.homeOrder = 'nope';
+  const before = snapshot((await getBackup(context)).doc);
+  response = await api(context, '/api/restore?confirm=replace', {
+    method: 'POST',
+    data: JSON.stringify(malformed),
+    headers: { 'Content-Type': 'application/json' },
+  });
+  expect(response.status()).toBe(422);
+  expect(snapshot((await getBackup(context)).doc)).toBe(before);
 
   await context.close();
 });

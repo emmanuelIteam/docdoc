@@ -1139,11 +1139,12 @@ document.addEventListener('pointercancel', (e) => {
 });
 
 /* -------------------------------------------------------------------- */
-/* Home board: drag a card between the two GTD rubriques.              */
+/* Home board: drag a card to reorder it or to change rubrique.         */
 /*                                                                      */
 /* HTML5 drag for a mouse/pen, Pointer Events from the grip for touch.  */
-/* Both paths end in the same status POST and replace #home-board with  */
-/* the server-rendered fragment, so counts and empty states stay true.  */
+/* The arrows and the rubrique menu post the same /api/home/order       */
+/* route; every response replaces #home-board with the server-rendered  */
+/* fragment, so counts and empty states stay true.                      */
 /* -------------------------------------------------------------------- */
 
 const GTD_LABELS = { in_progress: 'À faire', waiting: 'En attente' };
@@ -1160,11 +1161,41 @@ function gtdClearDropTarget() {
   document
     .querySelectorAll('.gtd-column.gtd-drop-target, .gtd-column.gtd-drop-invalid')
     .forEach((el) => el.classList.remove('gtd-drop-target', 'gtd-drop-invalid'));
+  document
+    .querySelectorAll('.gtd-card.gtd-drop-before, .gtd-card.gtd-drop-after')
+    .forEach((el) => el.classList.remove('gtd-drop-before', 'gtd-drop-after'));
 }
 
-function gtdSetDropTarget(column) {
+// The insertion point is expressed in cards, not pixels: the number of cards
+// of the target column — the dragged one excluded — whose middle is above the
+// pointer. Dropping under the last card therefore gives the list length, and
+// dropping on the current position gives the current index, which the caller
+// turns into "no request".
+function gtdDropIndex(column, clientY, draggedCard) {
+  const cards = [...column.querySelectorAll('.gtd-card')].filter((card) => card !== draggedCard);
+  let index = 0;
+  for (const card of cards) {
+    const rect = card.getBoundingClientRect();
+    if (clientY > rect.top + rect.height / 2) index += 1;
+  }
+  return index;
+}
+
+function gtdCardIndex(card) {
+  const column = card.closest('.gtd-column');
+  if (!column) return -1;
+  return [...column.querySelectorAll('.gtd-card')].indexOf(card);
+}
+
+function gtdSetDropTarget(column, index, draggedCard) {
   gtdClearDropTarget();
-  if (column) column.classList.add('gtd-drop-target');
+  if (!column) return;
+  column.classList.add('gtd-drop-target');
+  const cards = [...column.querySelectorAll('.gtd-card')].filter((card) => card !== draggedCard);
+  if (!cards.length) return;
+  if (index <= 0) cards[0].classList.add('gtd-drop-before');
+  else if (index >= cards.length) cards[cards.length - 1].classList.add('gtd-drop-after');
+  else cards[index].classList.add('gtd-drop-before');
 }
 
 function gtdBuildGhost(card) {
@@ -1174,7 +1205,7 @@ function gtdBuildGhost(card) {
   clone.classList.remove('dragging', 'gtd-touch-pending');
   clone.removeAttribute('id');
   clone.querySelectorAll('[id]').forEach((el) => el.removeAttribute('id'));
-  clone.querySelectorAll('.gtd-move').forEach((el) => el.remove());
+  clone.querySelectorAll('.gtd-move, .gtd-order').forEach((el) => el.remove());
   ghost.appendChild(clone);
   document.body.appendChild(ghost);
   return ghost;
@@ -1199,13 +1230,53 @@ function gtdAnnounce(message) {
   });
 }
 
+function gtdColumnPosition(card) {
+  const column = card.closest('.gtd-column');
+  if (!column) return { position: 0, total: 0 };
+  const cards = [...column.querySelectorAll('.gtd-card')];
+  return { position: cards.indexOf(card) + 1, total: cards.length };
+}
+
 function gtdFinishMove() {
   if (!gtdPendingMove) return;
   const pending = gtdPendingMove;
   gtdPendingMove = null;
   const card = document.getElementById('gtd-node-' + pending.nodeId);
-  const link = card && card.querySelector('.gtd-card-title');
+  if (!card) return;
+  if (pending.kind === 'arrow') {
+    // Keep the focus on the arrow that was used, so the gesture can be
+    // repeated; when it becomes disabled at an end, hand over to the other
+    // arrow, and to the title when the card is alone.
+    const same = card.querySelector('.gtd-order-btn[data-dir="' + pending.direction + '"]');
+    const otherDirection = pending.direction === 'up' ? 'down' : 'up';
+    const other = card.querySelector('.gtd-order-btn[data-dir="' + otherDirection + '"]');
+    if (same && !same.disabled) same.focus();
+    else if (other && !other.disabled) other.focus();
+    else {
+      const link = card.querySelector('.gtd-card-title');
+      if (link) link.focus();
+    }
+    const { position, total } = gtdColumnPosition(card);
+    gtdAnnounce(
+      '« ' +
+        pending.title +
+        ' » ' +
+        (pending.direction === 'up' ? 'montée' : 'descendue') +
+        ' en position ' +
+        position +
+        ' sur ' +
+        total +
+        '.'
+    );
+    return;
+  }
+  const link = card.querySelector('.gtd-card-title');
   if (link) link.focus();
+  if (pending.kind === 'drag' && pending.fromRubrique === pending.targetRubrique) {
+    const { position, total } = gtdColumnPosition(card);
+    gtdAnnounce('« ' + pending.title + ' » déplacée en position ' + position + ' sur ' + total + '.');
+    return;
+  }
   gtdAnnounce('« ' + pending.title + ' » déplacée vers ' + pending.targetLabel + '.');
 }
 
@@ -1216,38 +1287,23 @@ function gtdFailMove() {
   location.reload();
 }
 
-function gtdMoveCard(card, targetRubrique) {
-  if (!card || gtdBusy) return;
-  if (targetRubrique === card.dataset.rubrique) return;
-  const url =
-    '/domaine/' +
-    encodeURIComponent(card.dataset.domain) +
-    '/api/nodes/' +
-    encodeURIComponent(card.dataset.node) +
-    '/status';
-  const status = targetRubrique;
-  gtdBusy = true;
-  gtdPendingMove = {
-    nodeId: card.dataset.node,
-    title: gtdCardTitle(card),
-    targetLabel: GTD_LABELS[targetRubrique] || targetRubrique,
-  };
-  const board = document.getElementById('home-board');
-  if (board) board.setAttribute('aria-busy', 'true');
-
+// One request for every placement on the board: the domain, the node, the
+// target rubrique and an optional index. The server answers with the board
+// fragment, so counts and empty states stay true.
+function gtdSendOrder(values) {
   if (window.htmx) {
-    htmx.ajax('POST', url, {
+    htmx.ajax('POST', '/api/home/order', {
       target: '#home-board',
       swap: 'outerHTML',
-      values: { status: status, scope: 'head', vue: 'accueil' },
+      values,
     });
     return;
   }
 
   // htmx is always loaded by the shell; this fallback keeps the gesture usable
   // if a page is opened without it.
-  const body = new URLSearchParams({ status: status, scope: 'head', vue: 'accueil' });
-  fetch(url, {
+  const body = new URLSearchParams(values);
+  fetch('/api/home/order', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: body.toString(),
@@ -1269,6 +1325,29 @@ function gtdMoveCard(card, targetRubrique) {
       console.error('Erreur déplacement GTD:', err);
       gtdFailMove();
     });
+}
+
+function gtdPlaceCard(card, targetRubrique, index) {
+  if (!card || gtdBusy || !Number.isInteger(index)) return;
+  const sameRubrique = targetRubrique === card.dataset.rubrique;
+  if (sameRubrique && gtdCardIndex(card) === index) return;
+  gtdBusy = true;
+  gtdPendingMove = {
+    kind: 'drag',
+    nodeId: card.dataset.node,
+    title: gtdCardTitle(card),
+    fromRubrique: card.dataset.rubrique,
+    targetRubrique: targetRubrique,
+    targetLabel: GTD_LABELS[targetRubrique] || targetRubrique,
+  };
+  const board = document.getElementById('home-board');
+  if (board) board.setAttribute('aria-busy', 'true');
+  gtdSendOrder({
+    domain: card.dataset.domain,
+    node: card.dataset.node,
+    rubrique: targetRubrique,
+    index: String(index),
+  });
 }
 
 function gtdClearNativeDrag() {
@@ -1311,17 +1390,22 @@ document.addEventListener('dragover', (e) => {
   }
   e.preventDefault();
   if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-  gtdSetDropTarget(column);
+  const index = gtdDropIndex(column, e.clientY, gtdNativeDrag);
+  gtdSetDropTarget(column, index, gtdNativeDrag);
 });
 
 document.addEventListener('drop', (e) => {
   if (!gtdNativeDrag) return;
   const card = gtdNativeDrag;
   const column = e.target.closest('.gtd-column');
-  gtdClearNativeDrag();
-  if (!column) return;
+  if (!column) {
+    gtdClearNativeDrag();
+    return;
+  }
   e.preventDefault();
-  gtdMoveCard(card, column.dataset.gtd);
+  const index = gtdDropIndex(column, e.clientY, card);
+  gtdClearNativeDrag();
+  gtdPlaceCard(card, column.dataset.gtd, index);
 });
 
 document.addEventListener('dragend', () => {
@@ -1343,8 +1427,10 @@ function gtdUpdateTouchTarget() {
   const y = gtdTouchDrag.y;
   const el = document.elementFromPoint(x, y);
   const column = el && el.closest('.gtd-column');
+  const index = column ? gtdDropIndex(column, y, gtdTouchDrag.card) : null;
   gtdTouchDrag.target = column;
-  gtdSetDropTarget(column);
+  gtdTouchDrag.index = index;
+  gtdSetDropTarget(column, index, gtdTouchDrag.card);
 }
 
 function gtdTouchTick() {
@@ -1406,6 +1492,7 @@ document.addEventListener('pointerdown', (e) => {
     y: e.clientY,
     active: false,
     target: null,
+    index: null,
     ghost: null,
     raf: 0,
   };
@@ -1432,10 +1519,11 @@ document.addEventListener('pointerup', (e) => {
   const wasDragging = gtdTouchDrag.active;
   const card = gtdTouchDrag.card;
   const target = gtdTouchDrag.target ? gtdTouchDrag.target.dataset.gtd : null;
+  const index = gtdTouchDrag.index;
   gtdClearTouchDrag();
   if (!wasDragging) return;
   gtdSuppressClickUntil = performance.now() + 400;
-  if (target) gtdMoveCard(card, target);
+  if (target) gtdPlaceCard(card, target, index);
 });
 
 document.addEventListener('pointercancel', (e) => {
@@ -1457,24 +1545,35 @@ document.addEventListener(
   true
 );
 
-// Menu choices are ordinary htmx requests: remember their target so the focus
-// and the live announcement work exactly as after a drop.
+// Menu choices and order arrows are ordinary htmx requests: remember which
+// control was used so the focus and the live announcement work exactly as after
+// a drop.
 document.addEventListener('htmx:beforeRequest', (e) => {
   const elt = e.detail && e.detail.elt;
   if (!elt || !elt.closest || !elt.closest('#home-board')) return;
   const card = elt.closest('.gtd-card');
+  if (!card) return;
+  const arrow = elt.closest('.gtd-order-btn');
   const button = elt.closest('.gtd-move-item');
-  if (!card || !button) return;
+  if (!arrow && !button) return;
   if (gtdBusy) {
     e.preventDefault();
     return;
   }
   gtdBusy = true;
-  gtdPendingMove = {
-    nodeId: card.dataset.node,
-    title: gtdCardTitle(card),
-    targetLabel: button.textContent.trim(),
-  };
+  gtdPendingMove = arrow
+    ? {
+        kind: 'arrow',
+        nodeId: card.dataset.node,
+        title: gtdCardTitle(card),
+        direction: arrow.dataset.dir,
+      }
+    : {
+        kind: 'menu',
+        nodeId: card.dataset.node,
+        title: gtdCardTitle(card),
+        targetLabel: button.textContent.trim(),
+      };
   const board = document.getElementById('home-board');
   if (board) board.setAttribute('aria-busy', 'true');
 });

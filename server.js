@@ -130,6 +130,9 @@ function makeSpace(userId) {
     domains: new Map(),
     domainList: [],
     themes: [],
+    // Manual order of the home board, one list of node ids per rubrique. Empty
+    // until the user reorders a card: the board then keeps its natural order.
+    homeOrder: { in_progress: [], waiting: [] },
     writeQueue: Promise.resolve(),
   };
 }
@@ -158,6 +161,7 @@ async function loadSpace(userId) {
   const space = makeSpace(userId);
   await loadThemes(space);
   await loadDomains(space);
+  await loadHomeOrder(space);
   return space;
 }
 
@@ -283,6 +287,70 @@ const GTD_RUBRIQUES = [
   { id: 'in_progress', label: 'À faire' },
   { id: 'waiting', label: 'En attente' },
 ];
+
+/* --- Manual order of the home board -------------------------------- */
+
+// The order is a per-account document with one list of node ids per rubrique.
+// Unknown keys, non-string values and duplicates are dropped, and a missing or
+// malformed document means "no manual order": the board keeps its natural
+// domain-then-outline order.
+function normalizeHomeOrder(raw) {
+  const order = { in_progress: [], waiting: [] };
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return order;
+  for (const rubrique of GTD_RUBRIQUES) {
+    const list = raw[rubrique.id];
+    if (!Array.isArray(list)) continue;
+    const seen = new Set();
+    for (const value of list) {
+      if (typeof value !== 'string' || !value || seen.has(value)) continue;
+      seen.add(value);
+      order[rubrique.id].push(value);
+    }
+  }
+  return order;
+}
+
+async function loadHomeOrder(space) {
+  const parsed = await storage.readJson(storage.homeOrderKey(space.userId));
+  space.homeOrder = normalizeHomeOrder(parsed);
+}
+
+function persistHomeOrder(space) {
+  // Copy the arrays so a later reorder cannot mutate the document while it is
+  // queued behind another write.
+  const payload = {
+    in_progress: [...space.homeOrder.in_progress],
+    waiting: [...space.homeOrder.waiting],
+  };
+  space.writeQueue = space.writeQueue
+    .then(() => storage.writeJson(storage.homeOrderKey(space.userId), payload))
+    .catch((err) => {
+      console.error('Erreur d\u2019\u00e9criture de l\u2019ordre de l\u2019accueil:', err);
+    });
+  return space.writeQueue;
+}
+
+// Apply the recorded order to one rubrique's natural entries: ids that are
+// still listed keep their recorded position, then every other entry follows in
+// its natural order. A missing document therefore yields the natural order,
+// and a newly listed task is appended at the end.
+function orderHomeEntries(space, rubrique, entries) {
+  const remaining = new Map();
+  for (const entry of entries) remaining.set(entry.node.id, entry);
+  const ordered = [];
+  for (const id of space.homeOrder[rubrique] || []) {
+    const entry = remaining.get(id);
+    if (!entry) continue;
+    remaining.delete(id);
+    ordered.push(entry);
+  }
+  for (const entry of entries) {
+    if (!remaining.has(entry.node.id)) continue;
+    remaining.delete(entry.node.id);
+    ordered.push(entry);
+  }
+  return ordered;
+}
 
 // Legacy `someday` values (and any unknown value read from disk) fall back to
 // `todo` ("En projet"). It is applied when a domain is loaded, so no migration
@@ -526,6 +594,37 @@ function rejectBackup(message) {
   throw new BackupValidationError(message);
 }
 
+// Validate the manual order of the home board. A document written before this
+// field existed simply has no `homeOrder`: it then restores an empty order,
+// which is the intended "replace everything" behavior. Duplicates are dropped
+// and unknown keys are ignored; anything else than a string id is refused.
+function validateBackupHomeOrder(raw) {
+  const order = { in_progress: [], waiting: [] };
+  if (raw === undefined) return order;
+  if (!isPlainObject(raw)) {
+    rejectBackup("L'ordre manuel de la page d'accueil n'est pas un objet.");
+  }
+  for (const rubrique of GTD_RUBRIQUES) {
+    const list = raw[rubrique.id];
+    if (list === undefined) continue;
+    if (!Array.isArray(list)) {
+      rejectBackup(`L'ordre de la rubrique « ${rubrique.label} » n'est pas une liste.`);
+    }
+    const seen = new Set();
+    for (const value of list) {
+      if (typeof value !== 'string' || !value) {
+        rejectBackup(
+          `Un identifiant de l'ordre de la rubrique « ${rubrique.label} » n'est pas textuel.`
+        );
+      }
+      if (seen.has(value)) continue;
+      seen.add(value);
+      order[rubrique.id].push(value);
+    }
+  }
+  return order;
+}
+
 // Validate the task tree and return it with the same defaults the application
 // applies when it loads a domain: a missing title is empty, a missing status is
 // "todo", a missing collapsed flag is false. Unknown fields are preserved.
@@ -657,7 +756,8 @@ function validateBackup(doc) {
     const activeSlugs = new Set();
     const domains = doc.domains.map((raw) => validateBackupDomain(raw, 'domain', themeIds, ids, activeSlugs));
     const archives = doc.archives.map((raw) => validateBackupDomain(raw, 'archive', themeIds, ids, activeSlugs));
-    return { ok: true, value: { themes, domains, archives } };
+    const homeOrder = validateBackupHomeOrder(doc.homeOrder);
+    return { ok: true, value: { themes, domains, archives, homeOrder } };
   } catch (err) {
     if (err instanceof BackupValidationError) return { ok: false, message: err.message };
     throw err;
@@ -681,14 +781,18 @@ async function exportBackup(space) {
     themes,
     domains,
     archives,
+    homeOrder: {
+      in_progress: [...space.homeOrder.in_progress],
+      waiting: [...space.homeOrder.waiting],
+    },
   };
 }
 
 // Whole-space replacement (design D3). New objects are written before the
 // objects absent from the file are deleted, so an interruption never removes
 // data that has no copy in the backup; re-running the same file finishes the job
-// (design D5). Only the three data families of the account are addressed here:
-// account.json, passkeys and the lookup indexes are never touched.
+// (design D5). Only the account's data families are addressed here: account.json,
+// passkeys and the lookup indexes are never touched.
 async function restoreBackup(space, backup) {
   const userId = space.userId;
   await space.writeQueue;
@@ -698,6 +802,7 @@ async function restoreBackup(space, backup) {
   const targetArchiveKeys = new Set(backup.archives.map((archive) => storage.archiveKey(userId, archive.id)));
 
   await storage.writeJson(storage.themesKey(userId), backup.themes);
+  await storage.writeJson(storage.homeOrderKey(userId), backup.homeOrder);
   for (const domain of backup.domains) {
     await storage.writeJson(storage.domainKey(userId, domain.id), domain);
   }
@@ -1507,9 +1612,12 @@ function homeRubrique(node) {
   return null;
 }
 
-// Group every listed leaf into the two rubriques, in sidebar domain order and,
-// inside a domain, in the outline's display order. The order is recomputed on
-// every render: a move changes the rubrique, not a manual position.
+// Group every listed leaf into the two rubriques in the natural order — sidebar
+// domain order, then the outline's display order — then apply the account's
+// manual order. The natural order is what a rubrique shows until a card is
+// moved; the recorded order then takes precedence, and any card without a
+// recorded position is appended at the end. The route `/api/home/order` is the
+// only writer of that order.
 function homeBoard(space) {
   const buckets = { in_progress: [], waiting: [] };
   for (const summary of space.domainList) {
@@ -1528,14 +1636,19 @@ function homeBoard(space) {
       });
     }
   }
+  for (const rubrique of GTD_RUBRIQUES) {
+    buckets[rubrique.id] = orderHomeEntries(space, rubrique.id, buckets[rubrique.id]);
+  }
   return buckets;
 }
 
 // One card of the home board. The title is the existing deep link (the only
-// clickable text); the grip and the rubrique menu are separate controls so a
-// drag never follows the link. The title is plain text because an inline task
+// clickable text); the grip, the up/down arrows and the rubrique menu are
+// separate controls so a drag never follows the link. The arrows request a
+// position one step away and are disabled at the ends; the menu appends to the
+// target rubrique (no `index`). The title is plain text because an inline task
 // link would nest an anchor inside the card's anchor.
-function homeTaskCard(domain, node, ancestors, rubrique) {
+function homeTaskCard(domain, node, ancestors, rubrique, position, total) {
   const href = `/domaine/${domain.slug}?reveal=${node.id}#node-${node.id}`;
   const title = escapeHtml(titleLabel(node.title));
   const chain = ancestors
@@ -1547,20 +1660,33 @@ function homeTaskCard(domain, node, ancestors, rubrique) {
         `</span>`
     )
     .join('');
-  const statusPath = `/domaine/${domain.slug}/api/nodes/${node.id}/status`;
+  const positionVals = (index) =>
+    escapeHtml(
+      JSON.stringify({
+        domain: domain.slug,
+        node: node.id,
+        rubrique,
+        index,
+      })
+    );
+  const orderButton = (direction, index, disabled, label, glyph) =>
+    `<button type="button" class="gtd-order-btn" data-dir="${direction}"` +
+    ` aria-label="${label}" title="${label}"` +
+    ` hx-post="/api/home/order" hx-vals='${positionVals(index)}'` +
+    ` hx-target="#home-board" hx-swap="outerHTML"${disabled ? ' disabled' : ''}>${glyph}</button>`;
   const moveChoice = (target) => {
     if (target.id === rubrique) {
       return `<button type="button" class="gtd-move-item current" disabled aria-current="true">${target.label}</button>`;
     }
     const vals = escapeHtml(
       JSON.stringify({
-        status: target.id,
-        scope: 'head',
-        vue: 'accueil',
+        domain: domain.slug,
+        node: node.id,
+        rubrique: target.id,
       })
     );
     return (
-      `<button type="button" class="gtd-move-item" hx-post="${escapeHtml(statusPath)}"` +
+      `<button type="button" class="gtd-move-item" hx-post="/api/home/order"` +
       ` hx-vals='${vals}' hx-target="#home-board" hx-swap="outerHTML">${target.label}</button>`
     );
   };
@@ -1575,6 +1701,10 @@ function homeTaskCard(domain, node, ancestors, rubrique) {
     `${chain}` +
     `</span>` +
     `</div>` +
+    `<div class="gtd-order">` +
+    orderButton('up', position - 1, position <= 0, `Monter « ${title} »`, '↑') +
+    orderButton('down', position + 1, position >= total - 1, `Descendre « ${title} »`, '↓') +
+    `</div>` +
     `<details class="gtd-move">` +
     `<summary class="gtd-move-summary" title="Changer de rubrique" aria-label="Changer la rubrique de « ${title} »">⋯</summary>` +
     `<div class="gtd-move-menu">` +
@@ -1586,16 +1716,18 @@ function homeTaskCard(domain, node, ancestors, rubrique) {
   );
 }
 
-// The board fragment is also the response of a status mutation coming from the
-// home page (`vue=accueil`), so htmx replaces it in one piece. The two rubriques
-// are grouped under the visible "En cours" heading; an empty one shows a message
-// instead of a list.
+// The board fragment is the response of `/api/home/order` (and of the
+// `vue=accueil` status mutation kept for existing callers), so htmx replaces it
+// in one piece. The two rubriques are grouped under the visible "En cours"
+// heading; an empty one shows a message instead of a list.
 function renderHomeBoard(space) {
   const buckets = homeBoard(space);
   const columns = GTD_RUBRIQUES.map((rubrique) => {
     const entries = buckets[rubrique.id];
     const cards = entries
-      .map(({ domain, node, ancestors }) => homeTaskCard(domain, node, ancestors, rubrique.id))
+      .map(({ domain, node, ancestors }, position) =>
+        homeTaskCard(domain, node, ancestors, rubrique.id, position, entries.length)
+      )
       .join('');
     const body = cards
       ? `<ul class="gtd-list">${cards}</ul>`
@@ -1899,6 +2031,11 @@ function renderGuidePage(space) {
     </section>
 
     <section class="guide-section">
+      <h2>Ordonner les tâches de l'accueil</h2>
+      <p>Dans chaque rubrique de la page d'accueil, glissez une carte au-dessus ou en dessous d'une autre pour la placer à cet endroit, à la souris comme avec la poignée sur un écran tactile. Les flèches ↑ et ↓ de chaque carte la déplacent d'un cran ; elles sont désactivées en première et en dernière position. Un dépôt dans l'autre rubrique place la carte à l'endroit déposé, tandis que le menu « Changer de rubrique » la place en fin de liste. L'ordre est mémorisé pour votre compte et conservé d'une visite à l'autre ; une nouvelle tâche rejoint la fin de sa rubrique.</p>
+    </section>
+
+    <section class="guide-section">
       <h2>Garder le fil de la hiérarchie</h2>
       <p>En défilant, l'en-tête reste collé en haut de l'écran : il affiche le nom du domaine puis, sur les lignes suivantes, la chaîne des tâches mères de la première ligne visible. Cliquez sur une tâche de la chaîne pour y revenir.</p>
     </section>
@@ -2039,6 +2176,56 @@ app.use(auth.guard, withSpace);
 // persisted, so opening `/` never writes to the account.
 app.get('/', (req, res) => {
   res.type('html').send(renderHomePage(req.space));
+});
+
+// Place a card on the home board: `rubrique` is the target column, `node` the
+// task, `domain` its slug, and `index` the requested final position (absent
+// means "append"). A cross-rubrique placement also sets the task's status, in
+// the same request, so the card can never land in a column without its state.
+// The route always answers with the board fragment, like the status route does
+// for `vue=accueil`. It is the only writer of the manual order.
+app.post('/api/home/order', (req, res) => {
+  const rubrique = typeof req.body.rubrique === 'string' ? req.body.rubrique : '';
+  if (!GTD_RUBRIQUES.some((entry) => entry.id === rubrique)) {
+    return res.status(400).type('text/plain').send('Rubrique invalide.');
+  }
+  let index = null;
+  if (req.body.index !== undefined && String(req.body.index) !== '') {
+    const parsed = Number(String(req.body.index));
+    if (!Number.isInteger(parsed)) {
+      return res.status(400).type('text/plain').send('Position invalide.');
+    }
+    index = parsed;
+  }
+  const domain = findDomainBySlug(
+    req.space,
+    typeof req.body.domain === 'string' ? req.body.domain : ''
+  );
+  if (!domain) return res.status(404).type('text/plain').send('Domaine introuvable');
+  const found = findNode(
+    domain.projects,
+    typeof req.body.node === 'string' ? req.body.node : ''
+  );
+  if (!found) return res.status(404).type('text/plain').send('Noeud introuvable');
+  const current = homeRubrique(found.node);
+  if (!current) {
+    return res.status(400).type('text/plain').send('Tâche non listée sur le tableau.');
+  }
+  if (current !== rubrique) {
+    if (!setStatus(domain.projects, found.node.id, rubrique, 'head')) {
+      return res.status(400).type('text/plain').send('Statut invalide');
+    }
+    persistDomain(req.space, domain);
+  }
+  // The displayed list after the mutation, minus the task itself, is the list
+  // the requested index refers to: the client counts the other cards only.
+  const entries = homeBoard(req.space)[rubrique];
+  const ids = entries.map((entry) => entry.node.id).filter((id) => id !== found.node.id);
+  const position = index === null ? ids.length : Math.max(0, Math.min(ids.length, index));
+  ids.splice(position, 0, found.node.id);
+  req.space.homeOrder[rubrique] = ids;
+  persistHomeOrder(req.space);
+  res.type('html').send(renderHomeBoard(req.space));
 });
 
 // The administration page works even with an empty space, so it is reachable

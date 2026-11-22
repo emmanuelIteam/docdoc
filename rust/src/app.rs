@@ -35,7 +35,7 @@ use crate::model::{
 use crate::otp::{self, OtpStore, RequestOutcome, VerifyOutcome};
 use crate::passkey::{self, RegistrationCredential};
 use crate::session::{self, now_iso, require_auth, AuthUser, SessionData, SessionStore};
-use crate::space::{self, SharedSpace, Space};
+use crate::space::{self, HomeOrder, SharedSpace, Space};
 use crate::storage::{self, Storage};
 
 const BACKUP_FORMAT: &str = "docdoc-backup";
@@ -240,6 +240,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/passkeys/rename", post(rename_passkey_route))
         .route("/auth/passkeys/revoke", post(revoke_passkey_route))
         .route("/api/backup", get(export_backup_route))
+        .route("/api/home/order", post(home_order_route))
         .route("/domaine/{slug}", get(domain_page))
         .route("/domaine/{slug}/outline-fragment", get(outline_fragment))
         .route("/domaine/{slug}/api/outline", get(outline_json))
@@ -1117,6 +1118,7 @@ struct ValidatedBackup {
     themes: Vec<Theme>,
     domains: Vec<Domain>,
     archives: Vec<Domain>,
+    home_order: HomeOrder,
 }
 
 async fn read_archived_domains(state: &AppState, space: &Space) -> Vec<Domain> {
@@ -1270,6 +1272,46 @@ fn validate_backup_domain(
     Ok(())
 }
 
+fn validate_backup_home_list(raw: Option<&Value>, rubrique: &str) -> Result<Vec<String>, String> {
+    let Some(raw) = raw else {
+        return Ok(Vec::new());
+    };
+    let items = raw
+        .as_array()
+        .ok_or_else(|| format!("L'ordre de la rubrique « {rubrique} » n'est pas une liste."))?;
+    let mut seen = HashSet::new();
+    let mut list = Vec::new();
+    for item in items {
+        let id = item
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                format!(
+                    "Un identifiant de l'ordre de la rubrique « {rubrique} » n'est pas textuel."
+                )
+            })?;
+        if seen.insert(id.to_string()) {
+            list.push(id.to_string());
+        }
+    }
+    Ok(list)
+}
+
+// A document written before `homeOrder` existed has no such field: it restores
+// an empty order, which is the intended "replace everything" behavior.
+fn validate_backup_home_order(raw: Option<&Value>) -> Result<HomeOrder, String> {
+    let Some(raw) = raw else {
+        return Ok(HomeOrder::default());
+    };
+    let object = raw
+        .as_object()
+        .ok_or("L'ordre manuel de la page d'accueil n'est pas un objet.")?;
+    let mut order = HomeOrder::default();
+    order.in_progress = validate_backup_home_list(object.get("in_progress"), "in_progress")?;
+    order.waiting = validate_backup_home_list(object.get("waiting"), "waiting")?;
+    Ok(order)
+}
+
 fn validate_backup(doc: &Value) -> Result<ValidatedBackup, String> {
     let object = doc
         .as_object()
@@ -1364,6 +1406,7 @@ fn validate_backup(doc: &Value) -> Result<ValidatedBackup, String> {
         themes,
         domains,
         archives,
+        home_order: validate_backup_home_order(object.get("homeOrder"))?,
     })
 }
 
@@ -1386,6 +1429,7 @@ fn backup_document(space: &Space, archives: Vec<Domain>) -> Value {
         "themes": &space.themes,
         "domains": &domains,
         "archives": archives,
+        "homeOrder": &space.home_order,
     })
 }
 
@@ -1438,6 +1482,11 @@ async fn restore_backup(
     state
         .storage
         .write_json(&storage::themes_key(user_id), &themes)
+        .await?;
+    let home_order = serde_json::to_value(&backup.home_order).map_err(|err| err.to_string())?;
+    state
+        .storage
+        .write_json(&storage::home_order_key(user_id), &home_order)
         .await?;
     for domain in &backup.domains {
         let value = serde_json::to_value(domain).map_err(|err| err.to_string())?;
@@ -1897,6 +1946,71 @@ async fn status_route(
         StatusCode::OK,
         html::render_outline(domain, expand.as_ref()),
     )
+}
+
+async fn home_order_route(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let params = boundary_params(&headers, &body);
+    let rubrique = params.get("rubrique").cloned().unwrap_or_default();
+    if rubrique != "in_progress" && rubrique != "waiting" {
+        return text_response(StatusCode::BAD_REQUEST, "Rubrique invalide.");
+    }
+    let index = match params.get("index").map(String::as_str) {
+        None | Some("") => None,
+        Some(value) => match value.parse::<i64>() {
+            Ok(value) => Some(value),
+            Err(_) => return text_response(StatusCode::BAD_REQUEST, "Position invalide."),
+        },
+    };
+    let domain_slug = params.get("domain").cloned().unwrap_or_default();
+    let node_id = params.get("node").cloned().unwrap_or_default();
+    let handle = state.space_for(&auth.user_id, &auth.email).await;
+    let mut space = handle.lock().await;
+    let Some(domain_id) = space
+        .find_domain_by_slug(&domain_slug)
+        .map(|domain| domain.id.clone())
+    else {
+        return text_response(StatusCode::NOT_FOUND, "Domaine introuvable");
+    };
+    let Some(domain) = space.domains.get(&domain_id) else {
+        return text_response(StatusCode::NOT_FOUND, "Domaine introuvable");
+    };
+    let Some(node) = model::find_node(&domain.projects, &node_id) else {
+        return text_response(StatusCode::NOT_FOUND, "Noeud introuvable");
+    };
+    let Some(current) = html::home_rubrique(node) else {
+        return text_response(StatusCode::BAD_REQUEST, "Tâche non listée sur le tableau.");
+    };
+    let status_changed = current != rubrique.as_str();
+    if status_changed {
+        let Some(domain) = space.domains.get_mut(&domain_id) else {
+            return text_response(StatusCode::NOT_FOUND, "Domaine introuvable");
+        };
+        if !set_status(&mut domain.projects, &node_id, &rubrique, "head") {
+            return text_response(StatusCode::BAD_REQUEST, "Statut invalide");
+        }
+    }
+    // The displayed list after the mutation, minus the task itself, is what the
+    // requested index refers to: the client counts the other cards only.
+    let mut ids: Vec<String> = html::home_order_ids(&space, &rubrique)
+        .into_iter()
+        .filter(|id| id != &node_id)
+        .collect();
+    let position = match index {
+        None => ids.len(),
+        Some(value) => value.clamp(0, ids.len() as i64) as usize,
+    };
+    ids.insert(position, node_id);
+    space.home_order.set(&rubrique, ids);
+    if status_changed {
+        let _ = space.persist_domain(&state.storage, &domain_id).await;
+    }
+    let _ = space.persist_home_order(&state.storage).await;
+    html_response(StatusCode::OK, html::render_home_board(&space))
 }
 
 async fn toggle_route(
@@ -2828,6 +2942,263 @@ mod http_tests {
         assert!(!home.contains("data-gtd=\"someday\""));
         assert!(home.contains("class=\"gtd-group-title\">En cours</h2>"));
         assert!(home.contains(&format!("id=\"gtd-node-{node_id}\"")));
+    }
+
+    fn board_section<'a>(html: &'a str, rubrique: &str) -> &'a str {
+        let marker = format!("data-gtd=\"{rubrique}\"");
+        let start = html.find(&marker).expect("rubrique");
+        let end = html[start..].find("</section>").unwrap() + start;
+        &html[start..end]
+    }
+
+    #[tokio::test]
+    async fn home_order_route_reorders_changes_status_and_persists() {
+        let state = test_state();
+        let cookie = signed_in_cookie(&state).await;
+        let app = build_router(state);
+
+        call(
+            &app,
+            "POST",
+            "/api/domains",
+            Some(&cookie),
+            Some("application/x-www-form-urlencoded"),
+            "name=Maison",
+        )
+        .await;
+        let (_, _, page) = call(&app, "GET", "/domaine/maison", Some(&cookie), None, "").await;
+        let first = value_of(&page, "id=\"node-").to_string();
+        let (_, headers, _) = call(
+            &app,
+            "POST",
+            "/domaine/maison/api/nodes",
+            Some(&cookie),
+            None,
+            "",
+        )
+        .await;
+        let second = headers
+            .get("x-new-node-id")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        for id in [&first, &second] {
+            let (status, _, _) = call(
+                &app,
+                "POST",
+                &format!("/domaine/maison/api/nodes/{id}/status"),
+                Some(&cookie),
+                Some("application/json"),
+                "{\"status\":\"in_progress\",\"scope\":\"head\"}",
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+        }
+
+        // Move the second card to the head: it now precedes the first.
+        let (status, _, board) = call(
+            &app,
+            "POST",
+            "/api/home/order",
+            Some(&cookie),
+            Some("application/json"),
+            &format!(
+                "{{\"domain\":\"maison\",\"node\":\"{second}\",\"rubrique\":\"in_progress\",\"index\":0}}"
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(board.contains("id=\"home-board\""));
+        assert!(board.contains("hx-post=\"/api/home/order\""));
+        assert!(board.contains("class=\"gtd-order-btn\""));
+        let second_at = board.find(&format!("id=\"gtd-node-{second}\"")).unwrap();
+        let first_at = board.find(&format!("id=\"gtd-node-{first}\"")).unwrap();
+        assert!(second_at < first_at);
+
+        // The order is persisted, not just rendered.
+        let (_, _, home) = call(&app, "GET", "/", Some(&cookie), None, "").await;
+        let second_at = home.find(&format!("id=\"gtd-node-{second}\"")).unwrap();
+        let first_at = home.find(&format!("id=\"gtd-node-{first}\"")).unwrap();
+        assert!(second_at < first_at);
+
+        // A placement in the other rubrique also changes the task's status.
+        let (status, _, waiting) = call(
+            &app,
+            "POST",
+            "/api/home/order",
+            Some(&cookie),
+            Some("application/json"),
+            &format!(
+                "{{\"domain\":\"maison\",\"node\":\"{first}\",\"rubrique\":\"waiting\",\"index\":0}}"
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(board_section(&waiting, "waiting").contains(&format!("id=\"gtd-node-{first}\"")));
+        let (_, _, outline) = call(
+            &app,
+            "GET",
+            "/domaine/maison/api/outline",
+            Some(&cookie),
+            None,
+            "",
+        )
+        .await;
+        let tree: Value = serde_json::from_str(&outline).unwrap();
+        assert_eq!(tree[0]["id"], first.as_str());
+        assert_eq!(tree[0]["status"], "waiting");
+
+        // A cross-rubrique drop appends at the requested index; an out-of-range
+        // index is clamped to the last position.
+        call(
+            &app,
+            "POST",
+            "/api/home/order",
+            Some(&cookie),
+            Some("application/json"),
+            &format!(
+                "{{\"domain\":\"maison\",\"node\":\"{second}\",\"rubrique\":\"waiting\",\"index\":999}}"
+            ),
+        )
+        .await;
+        let (_, _, waiting) = call(&app, "GET", "/", Some(&cookie), None, "").await;
+        let section = board_section(&waiting, "waiting");
+        assert!(
+            section.find(&format!("id=\"gtd-node-{first}\"")).unwrap()
+                < section.find(&format!("id=\"gtd-node-{second}\"")).unwrap()
+        );
+
+        // Refusals leave the order and the status untouched.
+        let before = section.to_string();
+        for body in [
+            format!(
+                "{{\"domain\":\"maison\",\"node\":\"{first}\",\"rubrique\":\"later\",\"index\":0}}"
+            ),
+            format!(
+                "{{\"domain\":\"maison\",\"node\":\"inconnu\",\"rubrique\":\"in_progress\",\"index\":0}}"
+            ),
+            format!(
+                "{{\"domain\":\"maison\",\"node\":\"{first}\",\"rubrique\":\"in_progress\",\"index\":2.5}}"
+            ),
+        ] {
+            let (status, _, _) = call(
+                &app,
+                "POST",
+                "/api/home/order",
+                Some(&cookie),
+                Some("application/json"),
+                &body,
+            )
+            .await;
+            assert!(
+                status == StatusCode::BAD_REQUEST || status == StatusCode::NOT_FOUND,
+                "statut inattendu : {status}"
+            );
+        }
+        let (_, _, after) = call(&app, "GET", "/", Some(&cookie), None, "").await;
+        assert!(before == board_section(&after, "waiting"));
+        assert_eq!(
+            tree[1]["status"], "in_progress",
+            "le second nœud n'a pas bougé"
+        );
+    }
+
+    #[tokio::test]
+    async fn backup_carries_the_manual_order_and_accepts_its_absence() {
+        let state = test_state();
+        let cookie = signed_in_cookie(&state).await;
+        let app = build_router(state);
+
+        call(
+            &app,
+            "POST",
+            "/api/domains",
+            Some(&cookie),
+            Some("application/x-www-form-urlencoded"),
+            "name=Maison",
+        )
+        .await;
+        let (_, _, page) = call(&app, "GET", "/domaine/maison", Some(&cookie), None, "").await;
+        let first = value_of(&page, "id=\"node-").to_string();
+        let (_, headers, _) = call(
+            &app,
+            "POST",
+            "/domaine/maison/api/nodes",
+            Some(&cookie),
+            None,
+            "",
+        )
+        .await;
+        let second = headers
+            .get("x-new-node-id")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        for id in [&first, &second] {
+            call(
+                &app,
+                "POST",
+                &format!("/domaine/maison/api/nodes/{id}/status"),
+                Some(&cookie),
+                Some("application/json"),
+                "{\"status\":\"in_progress\",\"scope\":\"head\"}",
+            )
+            .await;
+        }
+        call(
+            &app,
+            "POST",
+            "/api/home/order",
+            Some(&cookie),
+            Some("application/json"),
+            &format!(
+                "{{\"domain\":\"maison\",\"node\":\"{second}\",\"rubrique\":\"in_progress\",\"index\":0}}"
+            ),
+        )
+        .await;
+
+        let (status, _, body) = call(&app, "GET", "/api/backup", Some(&cookie), None, "").await;
+        assert_eq!(status, StatusCode::OK);
+        let mut doc: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(doc["version"], 1);
+        assert_eq!(
+            doc["homeOrder"]["in_progress"],
+            json!([second.clone(), first.clone()])
+        );
+
+        // A document without homeOrder restores the natural order.
+        doc.as_object_mut().unwrap().remove("homeOrder");
+        let (status, _, _) = call(
+            &app,
+            "POST",
+            "/api/restore?confirm=replace",
+            Some(&cookie),
+            Some("application/json"),
+            &serde_json::to_string(&doc).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        let (_, _, home) = call(&app, "GET", "/", Some(&cookie), None, "").await;
+        assert!(
+            home.find(&format!("id=\"gtd-node-{first}\"")).unwrap()
+                < home.find(&format!("id=\"gtd-node-{second}\"")).unwrap()
+        );
+
+        // A malformed order is refused without touching the space.
+        let mut malformed: Value = serde_json::from_str(&body).unwrap();
+        malformed["homeOrder"] = json!("nope");
+        let (status, _, _) = call(
+            &app,
+            "POST",
+            "/api/restore?confirm=replace",
+            Some(&cookie),
+            Some("application/json"),
+            &serde_json::to_string(&malformed).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     #[tokio::test]

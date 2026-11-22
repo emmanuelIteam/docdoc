@@ -78,6 +78,13 @@ function themesKey(userId) {
   return userKey(userId, 'themes.json');
 }
 
+// The manual order of the home board: two lists of node ids, one per GTD
+// rubrique. Its absence means "no manual order yet", so the board keeps the
+// natural domain-then-outline order.
+function homeOrderKey(userId) {
+  return userKey(userId, 'home-order.json');
+}
+
 function accountKey(userId) {
   return userKey(userId, 'account.json');
 }
@@ -237,6 +244,7 @@ module.exports = {
   domainKey,
   archiveKey,
   themesKey,
+  homeOrderKey,
   accountKey,
   listDomainKeys,
   listArchiveKeys,

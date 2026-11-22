@@ -465,7 +465,8 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
   flex-direction: column;
   gap: .2rem;
   min-width: 0;
-  padding-right: 1.55rem;
+  /* Room for the two order arrows and the rubrique menu on the top right. */
+  padding-right: 5.3rem;
 }
 .gtd-card-title {
   color: #18181b;
@@ -497,6 +498,43 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
 .gtd-grip:focus-visible { background: #f4f4f5; color: var(--accent-dark); }
 .gtd-grip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .gtd-grip:active { cursor: grabbing; }
+/* The two arrows sit in the card's top-right gutter, just before the rubrique
+   menu; they are real buttons so they stay reachable by keyboard and touch. */
+.gtd-order {
+  position: absolute;
+  top: .3rem;
+  right: 2.05rem;
+  display: flex;
+  gap: .1rem;
+}
+.gtd-order-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  padding: 0;
+  border: none;
+  border-radius: .3rem;
+  background: transparent;
+  color: #71717a;
+  cursor: pointer;
+  font-size: .85rem;
+  line-height: 1;
+}
+.gtd-order-btn:hover:not(:disabled),
+.gtd-order-btn:focus-visible {
+  background: #eef2ff;
+  color: var(--accent-dark);
+}
+.gtd-order-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.gtd-order-btn:disabled {
+  color: #d4d4d8;
+  cursor: default;
+}
 .gtd-move {
   position: absolute;
   top: .3rem;
@@ -568,6 +606,22 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
   box-shadow: inset 0 0 0 2px var(--accent);
 }
 .gtd-column.gtd-drop-invalid { background: #fef2f2; }
+/* Insertion line shown between two cards while a card is dragged: a short bar
+   in the gap, without moving the cards themselves. */
+.gtd-card.gtd-drop-before::before,
+.gtd-card.gtd-drop-after::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+  pointer-events: none;
+}
+.gtd-card.gtd-drop-before::before { top: -.25rem; }
+.gtd-card.gtd-drop-after::after { bottom: -.25rem; }
 .gtd-drag-ghost {
   position: fixed;
   top: 0;
@@ -587,6 +641,8 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
   border: none;
   box-shadow: none;
 }
+/* The ghost drops the order controls, so it can reclaim their gutter. */
+.gtd-drag-ghost .gtd-card-body { padding-right: 1.55rem; }
 .gtd-touch-ghost {
   position: fixed;
   z-index: 60;

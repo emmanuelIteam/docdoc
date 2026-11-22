@@ -51,6 +51,11 @@ pub fn themes_key(user_id: &str) -> String {
     user_key(user_id, "themes.json")
 }
 
+/// Ordre manuel des tâches de l'accueil : un tableau d'identifiants par rubrique.
+pub fn home_order_key(user_id: &str) -> String {
+    user_key(user_id, "home-order.json")
+}
+
 pub fn account_key(user_id: &str) -> String {
     user_key(user_id, "account.json")
 }
