@@ -12,25 +12,45 @@ use serde_json::{Map, Value};
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
-pub const VALID_STATUSES: [&str; 5] = ["todo", "in_progress", "waiting", "someday", "done"];
+// The four persisted line statuses. `todo` is "En projet" on a domain page,
+// `in_progress` is "En cours" there and "À faire" on the home board, `waiting`
+// is the "En attente" sub-state, and `done` is "Terminé".
+pub const VALID_STATUSES: [&str; 4] = ["todo", "in_progress", "waiting", "done"];
 
 pub fn status_icon(status: &str) -> &'static str {
     match status {
         "in_progress" => "◐",
         "waiting" => "◷",
-        "someday" => "✧",
         "done" => "●",
         _ => "○",
     }
 }
 
+/// Label of the three actions offered in a line's context menu.
 pub fn status_label(status: &str) -> &'static str {
     match status {
         "in_progress" => "En cours",
-        "waiting" => "En attente",
-        "someday" => "Un jour peut-être",
         "done" => "Terminé",
+        _ => "En projet",
+    }
+}
+
+/// Label of the two home-board rubriques, the sub-states of "En cours".
+pub fn rubrique_label(status: &str) -> &'static str {
+    match status {
+        "waiting" => "En attente",
         _ => "À faire",
+    }
+}
+
+/// Keep only the four valid statuses; `someday` and any unknown value read from
+/// disk fall back to `todo` ("En projet"). Applied when a domain is loaded, so
+/// the normalized value is persisted on the domain's next write.
+pub fn normalize_status(status: &str) -> String {
+    if VALID_STATUSES.contains(&status) {
+        status.to_string()
+    } else {
+        "todo".to_string()
     }
 }
 
@@ -165,7 +185,7 @@ pub fn node_from_value(value: &Value) -> Option<Node> {
     Some(Node {
         id,
         title,
-        status,
+        status: normalize_status(&status),
         collapsed,
         children,
         extra,
@@ -538,6 +558,20 @@ pub fn create_node(domain: &mut Domain, parent_id: Option<&str>) -> Option<Node>
         }
     }
     Some(node)
+}
+
+// A project created from the domain page is inserted at the head of the
+// outline: before every other line, including the sub-lines of the former first
+// project. The display order is normalized first, so a stale or partial order
+// (legacy data, restore) cannot leave the new id behind lines that
+// `ensure_display_order` appends afterwards — the new line must really be first.
+pub fn create_project_at_head(domain: &mut Domain) -> Node {
+    let node = Node::new(default_title(None));
+    let mut order = ensure_display_order(&domain.projects, &domain.display_order);
+    domain.projects.insert(0, node.clone());
+    order.insert(0, node.id.clone());
+    domain.display_order = order;
+    node
 }
 
 pub fn create_node_after(domain: &mut Domain, anchor_id: &str) -> Option<Node> {
@@ -1015,6 +1049,35 @@ mod tests {
         assert_eq!(normalize_slug_base("Été à la maison !"), "ete-a-la-maison");
         assert_eq!(normalize_slug_base("  ---  "), "");
         assert_eq!(normalize_slug_base("Voiture (2)"), "voiture-2");
+    }
+
+    #[test]
+    fn status_vocabulary_has_three_project_states_and_waiting() {
+        assert_eq!(VALID_STATUSES, ["todo", "in_progress", "waiting", "done"]);
+        assert_eq!(status_label("todo"), "En projet");
+        assert_eq!(status_label("in_progress"), "En cours");
+        assert_eq!(status_label("done"), "Terminé");
+        assert_eq!(rubrique_label("in_progress"), "À faire");
+        assert_eq!(rubrique_label("waiting"), "En attente");
+        assert_eq!(normalize_status("someday"), "todo");
+        assert_eq!(normalize_status("inconnu"), "todo");
+        assert_eq!(normalize_status("waiting"), "waiting");
+    }
+
+    #[test]
+    fn node_from_value_normalizes_someday_to_todo() {
+        let value = serde_json::json!({"id": "n1", "title": "T", "status": "someday"});
+        let node = node_from_value(&value).unwrap();
+        assert_eq!(node.status, "todo");
+    }
+
+    #[test]
+    fn set_status_accepts_waiting_and_rejects_someday() {
+        let mut projects = vec![node("a", vec![])];
+        assert!(set_status(&mut projects, "a", "waiting", "head"));
+        assert_eq!(projects[0].status, "waiting");
+        assert!(!set_status(&mut projects, "a", "someday", "head"));
+        assert_eq!(projects[0].status, "waiting");
     }
 
     #[test]

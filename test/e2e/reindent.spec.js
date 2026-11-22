@@ -1965,3 +1965,103 @@ test('13.7 une réponse Entrée retardée ne remplace pas un champ ouvert', asyn
   await expect(page.locator('#outline .line')).toHaveCount(4);
   await expect(page.locator('#outline .line').nth(2)).toHaveAttribute('data-id', 'b');
 });
+
+/* ------------------------------------------------------------------ */
+/* 14: the domain page header adds a project at the head of the list   */
+/*     (openspec change add-project-button).                           */
+/* ------------------------------------------------------------------ */
+
+test('14.1 le bouton « + » ajoute un projet en tête et ouvre son titre', async ({ page }) => {
+  await page.goto(domainPath);
+
+  const addButton = page.locator('#add-project');
+  await expect(addButton).toBeVisible();
+  await expect(addButton).toHaveText('+');
+  await expect(addButton).toHaveAttribute('aria-label', 'Ajouter un projet');
+  await expect(addButton).toBeEnabled();
+
+  await addButton.click();
+
+  const input = page.locator('#outline .title-input');
+  await expect(input).toBeVisible();
+  await expect(input).toHaveValue('Nouveau projet');
+  const defaultValue = 'Nouveau projet';
+  // The whole default title is selected: the first keystroke replaces it.
+  await expect.poll(() => selection(input)).toBe(`0:${defaultValue.length}`);
+
+  const newId = await input.evaluate((el) => el.closest('.line').dataset.id);
+  await expect(line(page, newId)).toHaveAttribute('data-depth', '0');
+  await expect(page.locator('#outline .line').first()).toHaveAttribute('data-id', newId);
+
+  await page.keyboard.type('Projet C');
+  await expect(input).toHaveValue('Projet C');
+
+  const saved = page.waitForResponse(
+    (res) => res.request().method() === 'PUT' && res.url().includes(`/api/nodes/${newId}`)
+  );
+  await input.evaluate((el) => el.blur());
+  expect((await saved).status()).toBe(200);
+
+  // The head position is persisted: after a reload the new project is still
+  // first, before the former first project and its sub-line.
+  await page.reload();
+  await expect(page.locator('#outline .line').first()).toHaveAttribute('data-id', newId);
+  await expect(line(page, newId).locator('.title')).toHaveText('Projet C');
+  await expect(page.locator('#outline .line').nth(1)).toHaveAttribute('data-id', 'a');
+  await expect(line(page, 'a').locator('.title')).toHaveText('Projet A');
+  await expect(line(page, 'c')).toHaveAttribute('data-depth', '1');
+
+  // An in-place outline swap (collapsing a line) never replaces the control.
+  await toggleCollapse(page, 'a');
+  await expect(page.locator('#add-project')).toBeVisible();
+  await expect(page.locator('#add-project')).toBeEnabled();
+});
+
+test('14.2 un double clic sur « + » ne crée qu’un seul projet', async ({ page }) => {
+  await page.goto(domainPath);
+  const before = await page.locator('#outline .line').count();
+
+  // Two synchronous activations: the button is disabled by the first one, so the
+  // second cannot start a second creation.
+  await page.evaluate(() => {
+    const button = document.querySelector('#add-project');
+    button.click();
+    button.click();
+  });
+
+  await expect(page.locator('#outline .title-input')).toBeVisible();
+  await expect(page.locator('#outline .line')).toHaveCount(before + 1);
+});
+
+test('14.3 sur un écran étroit le bouton reste dans l’en-tête et ajoute en tête', async ({
+  touchPage,
+}) => {
+  await touchPage.setViewportSize({ width: 390, height: 500 });
+  await touchPage.goto(domainPath);
+
+  const addButton = touchPage.locator('#add-project');
+  await expect(addButton).toBeVisible();
+  const box = await addButton.boundingBox();
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(390);
+  // WCAG 2.2 AA target size, shared with the other mini controls.
+  expect(box.width).toBeGreaterThanOrEqual(24);
+  expect(box.height).toBeGreaterThanOrEqual(24);
+
+  // The header is sticky: the control stays on screen once the page scrolls.
+  await touchPage.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await expect(addButton).toBeVisible();
+
+  await addButton.click();
+  const input = touchPage.locator('#outline .title-input');
+  await expect(input).toBeVisible();
+  const newId = await input.evaluate((el) => el.closest('.line').dataset.id);
+  await expect(touchPage.locator('#outline .line').first()).toHaveAttribute('data-id', newId);
+});
+
+test('14.4 le bouton n’existe pas hors des pages de domaine', async ({ page }) => {
+  for (const path of ['/', '/administration', '/aide']) {
+    await page.goto(path);
+    await expect(page.locator('#add-project')).toHaveCount(0);
+  }
+});

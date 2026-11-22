@@ -23,6 +23,24 @@ let outlineRefreshPending = false;
 // is stale: replacing the outline then would destroy the newer field.
 let editGeneration = 0;
 
+// The title save started by closing a field runs in the background. A structural
+// creation (Enter, the context menu "+", the domain page "+") must wait for it:
+// the outline it re-renders would otherwise be built before the new title is
+// stored, and the text just typed would appear to revert. Cleared as soon as the
+// save settles.
+let pendingTitleSave = null;
+
+function trackTitleSave(savePromise) {
+  if (!savePromise) return;
+  pendingTitleSave = savePromise;
+  const settle = () => {
+    if (pendingTitleSave === savePromise) pendingTitleSave = null;
+  };
+  // Both handlers: the caller that awaits the save still reports its failure, and
+  // this bookkeeping must not surface a rejection of its own.
+  savePromise.then(settle, settle);
+}
+
 function reloadOutline() {
   if (document.querySelector('.title-input')) {
     outlineRefreshPending = true;
@@ -451,6 +469,7 @@ function startRename(span, clientX, clientY, forceEnd, selectAll, caretAt) {
     if (save && value && value !== original) {
       titleChanged = true;
       savePromise = saveTitle(id, value);
+      trackTitleSave(savePromise);
     }
     if (titleChanged) document.dispatchEvent(new CustomEvent('outline:title-changed'));
     // The bar measured its height with the field open: let it remeasure now that
@@ -1120,14 +1139,14 @@ document.addEventListener('pointercancel', (e) => {
 });
 
 /* -------------------------------------------------------------------- */
-/* Home board: drag a card between the three GTD rubriques.              */
+/* Home board: drag a card between the two GTD rubriques.              */
 /*                                                                      */
 /* HTML5 drag for a mouse/pen, Pointer Events from the grip for touch.  */
 /* Both paths end in the same status POST and replace #home-board with  */
 /* the server-rendered fragment, so counts and empty states stay true.  */
 /* -------------------------------------------------------------------- */
 
-const GTD_LABELS = { in_progress: 'En cours', waiting: 'En attente', someday: 'Un jour peut-être' };
+const GTD_LABELS = { in_progress: 'À faire', waiting: 'En attente' };
 const GTD_TOUCH_THRESHOLD = 8;
 
 let gtdNativeDrag = null;
@@ -1976,20 +1995,52 @@ document.addEventListener('click', (e) => {
   if (!addBtn) return;
   const line = addBtn.closest('.line');
   if (!line || !line.dataset.id) return;
-  addChildLine(line.dataset.id);
+  createLine({ parentId: line.dataset.id });
 });
 
-async function addChildLine(parentId) {
+// Add a project from the domain page header. The control is rendered by the
+// shell, never by the outline, so one delegated listener covers the whole page
+// life and an outline swap cannot detach it. It is disabled for the duration of
+// the request: a double click must not create two projects.
+document.addEventListener('click', async (e) => {
+  const button = e.target.closest('#add-project');
+  if (!button || button.disabled) return;
+  button.disabled = true;
+  button.setAttribute('aria-busy', 'true');
+  try {
+    await createLine({ position: 'head' });
+  } finally {
+    button.removeAttribute('aria-busy');
+    button.disabled = false;
+  }
+});
+
+// Create a line and open its title. `parentId` adds a sub-task under that line;
+// `position: 'head'` inserts a project at the top of the outline. The server
+// returns the new id in X-New-Node-Id so the fresh line can be named directly.
+async function createLine({ parentId = null, position = null } = {}) {
   // Keep an active deep-link reveal across the re-render, as htmx requests do.
   const reveal = new URLSearchParams(location.search).get('reveal');
   const url = domainPath('/api/nodes') + (reveal ? '?reveal=' + encodeURIComponent(reveal) : '');
+  // A title save started by the field closing runs in the background: wait for
+  // it, or the outline re-rendered by the creation would carry the old title and
+  // the text just typed would appear to revert.
+  if (pendingTitleSave) {
+    try {
+      await pendingTitleSave;
+    } catch (err) {
+      console.error('Erreur renommage:', err);
+      reloadOutline();
+      return;
+    }
+  }
   try {
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ parentId }),
+      body: JSON.stringify(parentId ? { parentId } : { position }),
     });
-    if (!res.ok) throw new Error('Création de tâche refusée (' + res.status + ')');
+    if (!res.ok) throw new Error('Création refusée (' + res.status + ')');
     const newId = res.headers.get('X-New-Node-Id');
     const html = await res.text();
     if (!swapOutlineHtml(html)) return;
@@ -1999,7 +2050,7 @@ async function addChildLine(parentId) {
     // The whole default title is selected, so typing replaces "Nouvelle tâche".
     if (newTitle) startRename(newTitle, 0, 0, true, true);
   } catch (err) {
-    console.error('Erreur création tâche:', err);
+    console.error('Erreur création:', err);
     reloadOutline();
   }
 }

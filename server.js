@@ -259,25 +259,46 @@ function genId() {
   return crypto.randomUUID();
 }
 
-const VALID_STATUSES = ['todo', 'in_progress', 'waiting', 'someday', 'done'];
+// The four persisted line statuses. `todo` is the unstarted state ("En projet"
+// on a domain page), `in_progress` is the active state ("En cours" there, and
+// the "À faire" sub-state on the home board), `waiting` is the other sub-state
+// ("En attente"), and `done` is "Terminé". Applying any status clears the
+// previous one.
+const VALID_STATUSES = ['todo', 'in_progress', 'waiting', 'done'];
 
-// The five line statuses and the three GTD rubriques of the home page. Each
-// rubrique maps one-to-one to a line status: only `in_progress`, `waiting` and
-// `someday` are listed, so a rubrique id is also the status written when a card
-// is dropped. `todo` stays a valid line status but is not part of the board.
-const STATUS_ICONS = { todo: '○', in_progress: '◐', waiting: '◷', someday: '✧', done: '●' };
-const STATUS_LABELS = {
-  todo: 'À faire',
-  in_progress: 'En cours',
-  waiting: 'En attente',
-  someday: 'Un jour peut-être',
-  done: 'Terminé',
-};
-const GTD_RUBRIQUES = [
-  { id: 'in_progress', label: 'En cours' },
-  { id: 'waiting', label: 'En attente' },
-  { id: 'someday', label: 'Un jour peut-être' },
+// The three status actions offered by a line's context menu. `waiting` is
+// deliberately absent: it is a sub-state of `in_progress` chosen from the home
+// page, not a planning state of the domain page. Each action keeps a distinct
+// glyph so the menu stays icon-only.
+const MENU_STATUSES = [
+  { id: 'todo', label: 'En projet', icon: '○' },
+  { id: 'in_progress', label: 'En cours', icon: '◐' },
+  { id: 'done', label: 'Terminé', icon: '●' },
 ];
+
+// The two GTD rubriques of the home board. Each rubrique maps one-to-one to the
+// status written when a card is dropped or moved from the rubrique menu; both
+// are sub-states of "En cours" and are shown under that heading.
+const GTD_RUBRIQUES = [
+  { id: 'in_progress', label: 'À faire' },
+  { id: 'waiting', label: 'En attente' },
+];
+
+// Legacy `someday` values (and any unknown value read from disk) fall back to
+// `todo` ("En projet"). It is applied when a domain is loaded, so no migration
+// script is needed: the normalized value is persisted on the next write.
+function normalizeStatus(status) {
+  return VALID_STATUSES.includes(status) ? status : 'todo';
+}
+
+function normalizeNodes(nodes) {
+  if (!Array.isArray(nodes)) return [];
+  return nodes.map((node) => ({
+    ...node,
+    status: normalizeStatus(node.status),
+    children: normalizeNodes(node.children || []),
+  }));
+}
 
 function statusClass(status) {
   return status === 'in_progress'
@@ -286,9 +307,7 @@ function statusClass(status) {
       ? 'status-done'
       : status === 'waiting'
         ? 'status-waiting'
-        : status === 'someday'
-          ? 'status-someday'
-          : '';
+        : '';
 }
 
 function normalizeDomain(themes, raw) {
@@ -298,7 +317,7 @@ function normalizeDomain(themes, raw) {
   const labels = Array.isArray(raw.labels)
     ? raw.labels.map(String).filter((id) => themes.some((t) => t.id === id))
     : [];
-  const projects = Array.isArray(raw.projects) ? raw.projects : [];
+  const projects = normalizeNodes(raw.projects);
   return {
     id: String(raw.id),
     name: typeof raw.name === 'string' ? raw.name : 'Sans titre',
@@ -528,7 +547,10 @@ function validateBackupNodes(nodes, domainName, seen) {
     if (raw.title !== undefined && typeof raw.title !== 'string') {
       rejectBackup(`Le titre de la tâche « ${raw.id} » du domaine « ${domainName} » n'est pas textuel.`);
     }
-    if (raw.status !== undefined && !VALID_STATUSES.includes(raw.status)) {
+    // `someday` is a legacy value: backups exported before the reduction to
+    // three project states still contain it and must remain restorable.
+    const legacyStatus = raw.status === 'someday';
+    if (raw.status !== undefined && !VALID_STATUSES.includes(raw.status) && !legacyStatus) {
       rejectBackup(`Statut inconnu pour la tâche « ${raw.id} » du domaine « ${domainName} ».`);
     }
     if (raw.collapsed !== undefined && typeof raw.collapsed !== 'boolean') {
@@ -540,7 +562,7 @@ function validateBackupNodes(nodes, domainName, seen) {
     return {
       ...raw,
       title: typeof raw.title === 'string' ? raw.title : '',
-      status: typeof raw.status === 'string' ? raw.status : 'todo',
+      status: normalizeStatus(raw.status),
       collapsed: typeof raw.collapsed === 'boolean' ? raw.collapsed : false,
       children: validateBackupNodes(raw.children || [], domainName, seen),
     };
@@ -906,6 +928,20 @@ function createNode(domain, parentId) {
   return node;
 }
 
+// A project created from the domain page goes to the head of the outline: before
+// every other line, including the sub-lines of the former first project. The
+// display order is normalized first, so a stale or partial order (legacy data,
+// restore) cannot leave the new id behind lines that `ensureDisplayOrder`
+// appends afterwards — the new line must really be first.
+function createProjectAtHead(domain) {
+  const node = { id: genId(), title: defaultTitle(null), status: 'todo', collapsed: false, children: [] };
+  const order = ensureDisplayOrder(domain.projects, domain.displayOrder);
+  domain.projects.unshift(node);
+  order.unshift(node.id);
+  domain.displayOrder = order;
+  return node;
+}
+
 // A domain always shows at least one root line. The outline is the only place a
 // line can be created (Enter on an existing line), so an empty outline would be
 // a dead end: materialize the default project lazily, the first time it matters.
@@ -1166,19 +1202,22 @@ function renderLine(entry, slug, collapsed) {
   // public/app.js), not by DOM nesting.
   const scopeExpr = (st) =>
     `js:{status:"${st}", scope:window.outlineSubtreeHasSelected && window.outlineSubtreeHasSelected(this) ? "subtree" : "head"}`;
-  const statusBtn = (st) =>
-    `<button type="button" class="menu-item${node.status === st ? ' active' : ''}" hx-post="/domaine/${slug}/api/nodes/${node.id}/status" hx-vals='${scopeExpr(st)}' hx-target="#outline" hx-swap="outerHTML" title="${STATUS_LABELS[st]}">${STATUS_ICONS[st]}</button>`;
+  // "En cours" covers both sub-states of the active work: a `waiting` line is
+  // shown with the in-progress action active, and choosing it brings the line
+  // back to "À faire" (`in_progress`).
+  const statusBtn = (action) => {
+    const active =
+      node.status === action.id ||
+      (action.id === 'in_progress' && node.status === 'waiting');
+    return `<button type="button" class="menu-item${active ? ' active' : ''}" hx-post="/domaine/${slug}/api/nodes/${node.id}/status" hx-vals='${scopeExpr(action.id)}' hx-target="#outline" hx-swap="outerHTML" title="${action.label}">${action.icon}</button>`;
+  };
 
   // The add-child action (+) is handled client-side (like copy-link and
   // rename), but it needs a server round-trip: the client reads the new node's
   // id from the X-New-Node-Id response header to open its title in edit mode.
   const menu =
     '<div class="menu">' +
-    statusBtn('todo') +
-    statusBtn('in_progress') +
-    statusBtn('waiting') +
-    statusBtn('someday') +
-    statusBtn('done') +
+    MENU_STATUSES.map(statusBtn).join('') +
     `<button type="button" class="menu-item copy-link" title="Copier le lien">🔗</button>` +
     `<button type="button" class="menu-item rename" title="Renommer">✎</button>` +
     `<button type="button" class="menu-item" hx-post="/domaine/${slug}/api/nodes/${node.id}/indent" hx-target="#outline" hx-swap="outerHTML" title="Indenter">→</button>` +
@@ -1368,6 +1407,11 @@ function renderShell(space, content, activeSlug, opts = {}) {
         <button type="button" class="btn sidebar-toggle" id="sidebar-toggle" title="Afficher/masquer le panneau">☰</button>
         <h1>${escapeHtml(opts.title || 'Mes projets')}</h1>
         ${
+          opts.addProject
+            ? '<button type="button" class="btn-mini topbar-add" id="add-project" title="Ajouter un projet" aria-label="Ajouter un projet">+</button>'
+            : ''
+        }
+        ${
           opts.ancestry
             ? '<nav class="ancestry" id="ancestry" aria-label="Hiérarchie des tâches mères"></nav>'
             : ''
@@ -1432,7 +1476,7 @@ function renderPage(space, domain, expandIds) {
     space,
     renderOutline(domain, domain.slug, expandIds) + renderLabelsBar(space, domain),
     domain.slug,
-    { title: domain.name, labelsBar: true, ancestry: true }
+    { title: domain.name, labelsBar: true, ancestry: true, addProject: true }
   );
 }
 
@@ -1450,23 +1494,24 @@ function ancestorChain(index, id) {
 }
 
 // The GTD rubrique of a leaf line, or null when the line is not listed on the
-// home board. Only active statuses are listed: `in_progress`, `waiting` and
-// `someday`. `todo` (not started), done and lines with children never appear.
-// The board only reads the in-memory space: a GET must not create the default
-// project of an empty domain nor persist anything.
+// home board. Only the two sub-states of "En cours" are listed: `in_progress`
+// ("À faire") and `waiting` ("En attente"). `todo` ("En projet"), `done`,
+// legacy `someday` (normalized to `todo` on load) and lines with children never
+// appear. The board only reads the in-memory space: a GET must not create the
+// default project of an empty domain nor persist anything.
 function homeRubrique(node) {
   if (!node || (node.children && node.children.length)) return null;
-  if (node.status === 'in_progress' || node.status === 'waiting' || node.status === 'someday') {
+  if (node.status === 'in_progress' || node.status === 'waiting') {
     return node.status;
   }
   return null;
 }
 
-// Group every listed leaf into the three rubriques, in sidebar domain order and,
+// Group every listed leaf into the two rubriques, in sidebar domain order and,
 // inside a domain, in the outline's display order. The order is recomputed on
 // every render: a move changes the rubrique, not a manual position.
 function homeBoard(space) {
-  const buckets = { in_progress: [], waiting: [], someday: [] };
+  const buckets = { in_progress: [], waiting: [] };
   for (const summary of space.domainList) {
     const domain = space.domains.get(summary.id);
     if (!domain) continue;
@@ -1542,8 +1587,9 @@ function homeTaskCard(domain, node, ancestors, rubrique) {
 }
 
 // The board fragment is also the response of a status mutation coming from the
-// home page (`vue=accueil`), so htmx replaces it in one piece. Columns are always
-// rendered; an empty one shows a message instead of a list.
+// home page (`vue=accueil`), so htmx replaces it in one piece. The two rubriques
+// are grouped under the visible "En cours" heading; an empty one shows a message
+// instead of a list.
 function renderHomeBoard(space) {
   const buckets = homeBoard(space);
   const columns = GTD_RUBRIQUES.map((rubrique) => {
@@ -1556,13 +1602,18 @@ function renderHomeBoard(space) {
       : '<p class="gtd-empty">Aucune tâche</p>';
     return (
       `<section class="gtd-column" data-gtd="${rubrique.id}" aria-labelledby="gtd-${rubrique.id}-heading">` +
-      `<header class="gtd-column-head"><h2 id="gtd-${rubrique.id}-heading">${rubrique.label}` +
-      ` <span class="gtd-count">${entries.length}</span></h2></header>` +
+      `<header class="gtd-column-head"><h3 id="gtd-${rubrique.id}-heading">${rubrique.label}` +
+      ` <span class="gtd-count">${entries.length}</span></h3></header>` +
       body +
       `</section>`
     );
   }).join('');
-  return `<div id="home-board" class="gtd-board" aria-label="Rubriques GTD">${columns}</div>`;
+  return (
+    `<div id="home-board" class="gtd-board-wrap" aria-label="Tâches en cours">` +
+    `<h2 class="gtd-group-title">En cours</h2>` +
+    `<div class="gtd-board">${columns}</div>` +
+    `</div>`
+  );
 }
 
 function renderHomePage(space) {
@@ -1837,9 +1888,14 @@ function renderGuidePage(space) {
     <p class="guide-intro">Cette page rassemble les gestes disponibles dans l'outline, du plus courant au plus spécifique.</p>
 
     <section class="guide-section">
+      <h2>Changer l'état d'une tâche</h2>
+      <p>Le menu d'une ligne propose trois états : « En projet » pour une tâche non commencée, « En cours » pour une tâche engagée, et « Terminé » pour une tâche achevée. « En cours » se décline en deux sous-états — « À faire » et « En attente » — qui se choisissent depuis la page d'accueil, pas depuis le menu de la ligne. Une tâche « En attente » apparaît donc avec « En cours » actif dans le menu ; la choisir la ramène à « À faire ».</p>
+    </section>
+
+    <section class="guide-section">
       <h2>Classer les tâches par rubrique GTD</h2>
-      <p>La page d'accueil, à la racine, présente trois rubriques : « En cours » pour les tâches commencées, « En attente » pour celles qui dépendent d'un tiers, et « Un jour peut-être » pour les idées mises de côté. Seules les tâches feuilles actives y figurent : une tâche à faire (non commencée) n'apparaît qu'après avoir été passée à « En cours » depuis son domaine, et les tâches terminées comme les lignes mères ne sont pas listées.</p>
-      <p>Glissez une carte d'une rubrique à une autre, à la souris ou avec la poignée sur un écran tactile. Le menu « Changer de rubrique » de chaque carte fait la même chose au clavier. Cliquez sur le titre d'une carte pour ouvrir la tâche dans son domaine, avec ses tâches mères dépliées et la ligne mise en évidence.</p>
+      <p>La page d'accueil, à la racine, présente les deux sous-états d'« En cours » : « À faire » pour les tâches actionnables et « En attente » pour celles qui dépendent d'un tiers. Seules les tâches feuilles « À faire » ou « En attente » y figurent : une tâche « En projet » n'apparaît qu'après avoir été passée à « En cours » depuis son domaine, et les tâches terminées comme les lignes mères ne sont pas listées. Une tâche héritée « Un jour peut-être » est lue comme « En projet » et n'est donc pas listée.</p>
+      <p>Glissez une carte d'une rubrique à l'autre, à la souris ou avec la poignée sur un écran tactile. Le menu « Changer de rubrique » de chaque carte fait la même chose au clavier. Cliquez sur le titre d'une carte pour ouvrir la tâche dans son domaine, avec ses tâches mères dépliées et la ligne mise en évidence.</p>
     </section>
 
     <section class="guide-section">
@@ -1872,6 +1928,11 @@ function renderGuidePage(space) {
     <section class="guide-section">
       <h2>Renommer une ligne</h2>
       <p>Cliquez sur un titre hors lien pour ouvrir son édition, ou utilisez l'action ✎ (« Renommer ») du menu.</p>
+    </section>
+
+    <section class="guide-section">
+      <h2>Ajouter un projet</h2>
+      <p>Le bouton + de l'en-tête d'une page de domaine ajoute un projet : la nouvelle ligne est insérée en tête de la liste, avant tous les autres projets et leurs sous-tâches, et son titre s'ouvre en édition avec « Nouveau projet » sélectionné pour le nommer directement. Le bouton reste dans l'en-tête pendant le défilement de la page.</p>
     </section>
 
     <section class="guide-section">
@@ -2111,7 +2172,13 @@ app.post('/domaine/:slug/api/nodes', (req, res) => {
   const domain = domainFromReq(req, res);
   if (!domain) return;
   const parentId = req.body.parentId || null;
-  const node = createNode(domain, parentId);
+  // `parentId` wins: a child is always appended under its parent. Without a
+  // parent, `position: "head"` inserts the project at the head of the outline;
+  // any other request keeps appending the project to the end of the list.
+  const node =
+    !parentId && req.body.position === 'head'
+      ? createProjectAtHead(domain)
+      : createNode(domain, parentId);
   if (!node) return res.status(404).send('Parent introuvable');
   if (parentId) {
     const parent = findNode(domain.projects, parentId);

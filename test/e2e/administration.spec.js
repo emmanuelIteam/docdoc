@@ -220,12 +220,14 @@ test('6.0 la page Aide est accessible depuis le pied du panneau, avant tout doma
   const guide = page.locator('.guide');
   await expect(guide).toBeVisible();
   await expect(page.locator('.guide-section h2')).toHaveText([
+    "Changer l'état d'une tâche",
     'Classer les tâches par rubrique GTD',
     'Garder le fil de la hiérarchie',
     'Sélectionner une ligne et ouvrir son menu',
     'Replier ou déplier une ligne',
     'Déplacer une ligne',
     'Renommer une ligne',
+    'Ajouter un projet',
     'Ajouter une sous-tâche',
     'Lier des tâches',
     'Indenter et désindenter une ligne',
@@ -238,9 +240,10 @@ test('6.0 la page Aide est accessible depuis le pied du panneau, avant tout doma
   await expect(guide).toContainText('MAJ+Tab');
   await expect(guide).toContainText('poignée');
   await expect(guide).toContainText('lien nommé');
+  await expect(guide).toContainText('en tête de la liste');
   await expect(guide).toContainText('deux flèches');
   await expect(guide).toContainText('En cours');
-  await expect(guide).toContainText('tâche à faire');
+  await expect(guide).toContainText('En projet');
   await expect(guide).toContainText('ne regroupent plus');
   await expect(guide.locator('a[href="/administration"]')).toHaveCount(2);
 

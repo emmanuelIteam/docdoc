@@ -28,9 +28,9 @@ use crate::html::{self, ArchiveSummary};
 use crate::mailer::Mailer;
 use crate::migration;
 use crate::model::{
-    self, create_node, create_node_after, delete_node, make_domain, move_domain, move_node,
-    next_order, next_theme_color, normalize_domain, reindent_node, set_domain_label, set_status,
-    slugify, toggle_collapse, Domain, Theme, VALID_STATUSES,
+    self, create_node, create_node_after, create_project_at_head, delete_node, make_domain,
+    move_domain, move_node, next_order, next_theme_color, normalize_domain, reindent_node,
+    set_domain_label, set_status, slugify, toggle_collapse, Domain, Theme, VALID_STATUSES,
 };
 use crate::otp::{self, OtpStore, RequestOutcome, VerifyOutcome};
 use crate::passkey::{self, RegistrationCredential};
@@ -1169,9 +1169,12 @@ fn validate_backup_nodes(
             }
         }
         if let Some(status) = object.get("status") {
+            // `someday` is a legacy value: backups exported before the
+            // reduction to three project states still contain it and are
+            // normalized to `todo` when the domain is loaded.
             let valid = status
                 .as_str()
-                .map(|value| VALID_STATUSES.contains(&value))
+                .map(|value| VALID_STATUSES.contains(&value) || value == "someday")
                 .unwrap_or(false);
             if !valid {
                 return Err(format!(
@@ -1697,6 +1700,10 @@ async fn create_node_route(
         .get("parentId")
         .filter(|value| !value.is_empty())
         .cloned();
+    // `parentId` wins: a child is always appended under its parent. Without a
+    // parent, `position: "head"` inserts the project at the head of the outline;
+    // any other request keeps appending it to the end of the list.
+    let at_head = parent_id.is_none() && params.get("position").map(String::as_str) == Some("head");
     let handle = state.space_for(&auth.user_id, &auth.email).await;
     let mut space = handle.lock().await;
     let Some(domain_id) = space
@@ -1705,11 +1712,15 @@ async fn create_node_route(
     else {
         return text_response(StatusCode::NOT_FOUND, "Domaine introuvable");
     };
-    let Some(node) = space
-        .domains
-        .get_mut(&domain_id)
-        .and_then(|domain| create_node(domain, parent_id.as_deref()))
-    else {
+    let Some(domain) = space.domains.get_mut(&domain_id) else {
+        return text_response(StatusCode::NOT_FOUND, "Domaine introuvable");
+    };
+    let node = if at_head {
+        Some(create_project_at_head(domain))
+    } else {
+        create_node(domain, parent_id.as_deref())
+    };
+    let Some(node) = node else {
         return text_response(StatusCode::NOT_FOUND, "Parent introuvable");
     };
     if let Some(parent_id) = &parent_id {
@@ -2662,6 +2673,86 @@ mod http_tests {
         assert!(page.contains("Nouveau projet"));
     }
 
+    // The add-project control of a domain page inserts a project at the head of
+    // the outline, above every other line, and the position is persisted
+    // (openspec change add-project-button).
+    #[tokio::test]
+    async fn add_project_route_inserts_a_line_at_the_head() {
+        let state = test_state();
+        let cookie = signed_in_cookie(&state).await;
+        let app = build_router(state);
+
+        call(
+            &app,
+            "POST",
+            "/api/domains",
+            Some(&cookie),
+            Some("application/x-www-form-urlencoded"),
+            "name=Maison",
+        )
+        .await;
+        let (_, _, page) = call(&app, "GET", "/domaine/maison", Some(&cookie), None, "").await;
+        // The control is rendered by the page shell, on domain pages only.
+        assert!(page.contains("id=\"add-project\""));
+        let default_id = value_of(&page, "id=\"node-").to_string();
+
+        // Give the default project a sub-line: the new project must land above the
+        // project *and* above that sub-line.
+        let (status, headers, _) = call(
+            &app,
+            "POST",
+            "/domaine/maison/api/nodes",
+            Some(&cookie),
+            Some("application/json"),
+            &format!("{{\"parentId\":\"{default_id}\"}}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let child_id = headers
+            .get("x-new-node-id")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let (status, headers, fragment) = call(
+            &app,
+            "POST",
+            "/domaine/maison/api/nodes",
+            Some(&cookie),
+            Some("application/json"),
+            "{\"position\":\"head\"}",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let new_id = headers
+            .get("x-new-node-id")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(fragment.contains("Nouveau projet"));
+        let new_at = fragment.find(&format!("id=\"node-{new_id}\"")).unwrap();
+        let default_at = fragment.find(&format!("id=\"node-{default_id}\"")).unwrap();
+        let child_at = fragment.find(&format!("id=\"node-{child_id}\"")).unwrap();
+        assert!(
+            new_at < default_at,
+            "the new project must precede the former first project"
+        );
+        assert!(
+            default_at < child_at,
+            "the former project keeps its sub-line below it"
+        );
+
+        // The head position is persisted, not only rendered once.
+        let (_, _, page) = call(&app, "GET", "/domaine/maison", Some(&cookie), None, "").await;
+        assert_eq!(value_of(&page, "id=\"node-"), new_id.as_str());
+
+        // Other pages never offer the control.
+        let (_, _, home) = call(&app, "GET", "/", Some(&cookie), None, "").await;
+        assert!(!home.contains("id=\"add-project\""));
+    }
+
     #[tokio::test]
     async fn home_board_status_route_returns_the_board_fragment() {
         let state = test_state();
@@ -2694,7 +2785,7 @@ mod http_tests {
         assert!(waiting.contains("data-gtd=\"waiting\""));
         assert!(waiting.contains(&format!("id=\"gtd-node-{node_id}\"")));
 
-        let (status, _, someday) = call(
+        let (status, _, _) = call(
             &app,
             "POST",
             &format!("/domaine/maison/api/nodes/{node_id}/status"),
@@ -2703,8 +2794,7 @@ mod http_tests {
             "{\"status\":\"someday\",\"scope\":\"head\",\"vue\":\"accueil\"}",
         )
         .await;
-        assert_eq!(status, StatusCode::OK);
-        assert!(someday.contains("data-gtd=\"someday\""));
+        assert_eq!(status, StatusCode::BAD_REQUEST);
 
         let (status, _, running) = call(
             &app,
@@ -2734,6 +2824,9 @@ mod http_tests {
         assert_eq!(status, StatusCode::OK);
         assert!(home.contains("Tableau de bord"));
         assert!(home.contains("data-gtd=\"in_progress\""));
+        assert!(home.contains("data-gtd=\"waiting\""));
+        assert!(!home.contains("data-gtd=\"someday\""));
+        assert!(home.contains("class=\"gtd-group-title\">En cours</h2>"));
         assert!(home.contains(&format!("id=\"gtd-node-{node_id}\"")));
     }
 

@@ -135,12 +135,14 @@ async function enroll(page, email) {
 /* Fixtures                                                            */
 /* ------------------------------------------------------------------ */
 
-// Domain A: all five statuses, at several depths. a1 and a1-1 are in-progress
-// parents and must not be listed; a2 is a todo parent (collapsed) with a waiting
-// and a someday leaf. a4 is a done parent with a done child. a1-1-1 and a3 are
-// in-progress leaves (En cours). a1-2 and a7 are todo leaves, which the board
-// does not list. a5 is a waiting leaf and a6 a someday leaf. The display order
-// interleaves the branches so the per-rubrique order can be checked.
+// Domain A: the three project states and the waiting sub-state, at several
+// depths. a1 and a1-1 are in-progress parents and must not be listed; a2 is a
+// todo parent (collapsed) with a waiting leaf and a legacy someday leaf. a4 is a
+// done parent with a done child. a1-1-1 and a3 are in-progress leaves ("À
+// faire"). a1-2 and a7 are todo leaves ("En projet"), which the board does not
+// list. a5 is a waiting leaf; a2-2 and a6 are legacy someday leaves, read as
+// todo and therefore not listed either. The display order interleaves the
+// branches so the per-rubrique order can be checked.
 const DOMAIN_A = {
   id: 'home-dom-a',
   name: 'Domaine A',
@@ -211,7 +213,7 @@ const DOMAIN_B = {
     { id: 'b1', title: 'Projet partagé', status: 'in_progress', collapsed: false, children: [] },
     { id: 'b2', title: 'Projet B2', status: 'todo', collapsed: false, children: [] },
     { id: 'b3', title: 'Tâche B3 en attente', status: 'waiting', collapsed: false, children: [] },
-    { id: 'b4', title: 'Tâche B4 un jour', status: 'someday', collapsed: false, children: [] },
+    { id: 'b4', title: 'Tâche B4 en attente', status: 'waiting', collapsed: false, children: [] },
   ],
   displayOrder: ['b1', 'b2', 'b3', 'b4'],
 };
@@ -316,21 +318,21 @@ test.afterAll(async () => {
 });
 
 /* ------------------------------------------------------------------ */
-/* 1.1 The three rubriques and their contents                          */
+/* 1.1 The two rubriques and their contents                            */
 /* ------------------------------------------------------------------ */
 
-test('1.1 l’accueil présente les trois rubriques et ne classe que les feuilles actives', async ({ browser }) => {
+test('1.1 l’accueil présente les deux sous-états d’« En cours » et ne classe que les feuilles actives', async ({ browser }) => {
   const { context, page } = await signedInPage(browser, stateA);
 
   await page.goto('/');
   await expect(page.locator('.topbar h1')).toHaveText('Tableau de bord');
-  await expect(page.locator('.gtd-column')).toHaveCount(3);
-  await expect(col(page, 'in_progress').locator('h2')).toContainText('En cours');
-  await expect(col(page, 'waiting').locator('h2')).toContainText('En attente');
-  await expect(col(page, 'someday').locator('h2')).toContainText('Un jour peut-être');
+  await expect(page.locator('.gtd-column')).toHaveCount(2);
+  await expect(page.locator('.gtd-group-title')).toHaveText('En cours');
+  await expect(col(page, 'in_progress').locator('h3')).toContainText('À faire');
+  await expect(col(page, 'waiting').locator('h3')).toContainText('En attente');
+  await expect(page.locator('.gtd-column[data-gtd="someday"]')).toHaveCount(0);
   await expect(col(page, 'in_progress').locator('.gtd-count')).toHaveText('3');
-  await expect(col(page, 'waiting').locator('.gtd-count')).toHaveText('3');
-  await expect(col(page, 'someday').locator('.gtd-count')).toHaveText('3');
+  await expect(col(page, 'waiting').locator('.gtd-count')).toHaveText('4');
 
   // Per rubrique, the order is sidebar domain order then outline display order.
   await expect(titlesIn(page, 'in_progress')).toHaveText([
@@ -342,19 +344,15 @@ test('1.1 l’accueil présente les trois rubriques et ne classe que les feuille
     'Tâche A2.1 cachée',
     'Tâche A5 en attente',
     'Tâche B3 en attente',
-  ]);
-  await expect(titlesIn(page, 'someday')).toHaveText([
-    'Tâche A2.2 un jour',
-    'Tâche A6 un jour',
-    'Tâche B4 un jour',
+    'Tâche B4 en attente',
   ]);
 
   // The badge that used to distinguish started tasks is gone.
   await expect(page.locator('.gtd-badge')).toHaveCount(0);
 
-  // Parents, done lines and todo lines are not cards, even when their titles
-  // appear in a chain: the absence is checked by id.
-  for (const id of ['a1', 'a1-1', 'a2', 'a4', 'a4-1', 'a1-2', 'a7', 'b2']) {
+  // Parents, done lines, todo lines and legacy someday lines are not cards,
+  // even when their titles appear in a chain: the absence is checked by id.
+  for (const id of ['a1', 'a1-1', 'a2', 'a4', 'a4-1', 'a1-2', 'a7', 'a2-2', 'a6', 'b2']) {
     await expect(page.locator(`#gtd-node-${id}`)).toHaveCount(0);
   }
 
@@ -409,12 +407,39 @@ test('1.2 ouvrir une tâche sous un ancêtre replié la déplie, la cible et ne 
   expect(await target.evaluate((el) => el.matches(':target'))).toBe(true);
   await expect(page.locator('.title-input')).toHaveCount(0);
   await expect(target.locator('.title')).toHaveClass(/status-waiting/);
-  // The line menu offers the two new GTD statuses as well.
-  await expect(target.locator('.menu-item[title="En attente"]')).toHaveCount(1);
-  await expect(target.locator('.menu-item[title="Un jour peut-être"]')).toHaveCount(1);
+  // The line menu offers the three project states only; the waiting sub-state
+  // is shown through an active "En cours" action.
+  await expect(target.locator('.menu-item[title="En projet"]')).toHaveCount(1);
+  await expect(target.locator('.menu-item[title="En cours"]')).toHaveCount(1);
+  await expect(target.locator('.menu-item[title="Terminé"]')).toHaveCount(1);
+  await expect(target.locator('.menu-item[title="En cours"]')).toHaveClass(/active/);
+  await expect(target.locator('.menu-item[title="En attente"]')).toHaveCount(0);
+  await expect(target.locator('.menu-item[title="Un jour peut-être"]')).toHaveCount(0);
+  // Three status actions plus the six structural actions.
+  await expect(target.locator('.menu .menu-item')).toHaveCount(9);
 
   await page.goto('/');
   await expect(cardIn(page, 'waiting', 'a2-1')).toHaveCount(1);
+
+  await context.close();
+});
+
+/* ------------------------------------------------------------------ */
+/* 1.2b Legacy someday lines are read as En projet                     */
+/* ------------------------------------------------------------------ */
+
+test('1.2b une tâche héritée Un jour peut-être est lue comme En projet', async ({ browser }) => {
+  const { context, page } = await signedInPage(browser, stateA);
+
+  await page.goto('/');
+  await expect(page.locator('#gtd-node-a6')).toHaveCount(0);
+  await expect(page.locator('#gtd-node-a2-2')).toHaveCount(0);
+  expect(await statusOf(page, 'domaine-a', 'a6')).toBe('todo');
+
+  await page.goto('/domaine/domaine-a');
+  const line = page.locator('#node-a6');
+  await expect(line.locator('.title')).not.toHaveClass(/status-/);
+  await expect(line.locator('.menu-item[title="En projet"]')).toHaveClass(/active/);
 
   await context.close();
 });
@@ -481,7 +506,7 @@ test("1.4 l'entrée Accueil du panneau mène à la racine et n'est active que l�
 /* 1.5 Empty states (account B)                                        */
 /* ------------------------------------------------------------------ */
 
-test('1.5 les états vides : aucun domaine, puis trois rubriques dès qu’un domaine existe', async ({ browser }) => {
+test('1.5 les états vides : aucun domaine, puis deux rubriques dès qu’un domaine existe', async ({ browser }) => {
   const { context, page } = await signedInPage(browser, stateB);
 
   // No domain yet: the root stays the homepage and points at Administration.
@@ -499,11 +524,11 @@ test('1.5 les états vides : aucun domaine, puis trois rubriques dès qu’un do
   await expect(page.locator('#admin-domains-table tbody tr')).toHaveCount(1);
 
   await page.goto('/');
-  await expect(page.locator('.gtd-column')).toHaveCount(3);
+  await expect(page.locator('.gtd-column')).toHaveCount(2);
+  await expect(page.locator('.gtd-group-title')).toHaveText('En cours');
   await expect(page.locator('.gtd-card')).toHaveCount(0);
   await expect(col(page, 'in_progress').locator('.gtd-empty')).toHaveText('Aucune tâche');
   await expect(col(page, 'waiting').locator('.gtd-empty')).toHaveText('Aucune tâche');
-  await expect(col(page, 'someday').locator('.gtd-empty')).toHaveText('Aucune tâche');
 
   await context.close();
 });
@@ -598,22 +623,16 @@ test('1.8 le glisser à la souris classe la carte et persiste le statut', async 
   const drag = async (id, rubrique) => {
     await cardIn(page, 'in_progress', id)
       .or(cardIn(page, 'waiting', id))
-      .or(cardIn(page, 'someday', id))
       .locator('.gtd-grip')
       .dragTo(col(page, rubrique));
   };
 
-  // En cours -> En attente.
+  // À faire -> En attente.
   await drag('a3', 'waiting');
   await expect(cardIn(page, 'waiting', 'a3')).toHaveCount(1);
   expect(await statusOf(page, 'domaine-a', 'a3')).toBe('waiting');
 
-  // En attente -> Un jour peut-être.
-  await drag('a3', 'someday');
-  await expect(cardIn(page, 'someday', 'a3')).toHaveCount(1);
-  expect(await statusOf(page, 'domaine-a', 'a3')).toBe('someday');
-
-  // Un jour peut-être -> En cours (the status becomes in_progress).
+  // En attente -> À faire (the status becomes in_progress).
   await drag('a3', 'in_progress');
   await expect(cardIn(page, 'in_progress', 'a3')).toHaveCount(1);
   expect(await statusOf(page, 'domaine-a', 'a3')).toBe('in_progress');
@@ -628,7 +647,7 @@ test('1.8 le glisser à la souris classe la carte et persiste le statut', async 
   expect(statusRequests).toEqual([]);
   expect(await statusOf(page, 'domaine-a', 'a3')).toBe('in_progress');
 
-  // A drop outside the three rubriques is ignored too.
+  // A drop outside the two rubriques is ignored too.
   await cardIn(page, 'in_progress', 'a3').locator('.gtd-grip').dragTo(page.locator('.topbar'));
   await page.waitForTimeout(150);
   expect(statusRequests).toEqual([]);
@@ -663,9 +682,8 @@ test('1.9 le menu de rubrique classe au clavier, restaure le focus et annonce', 
   const card = cardIn(page, 'in_progress', 'a1-1-1');
   await card.locator('.gtd-move-summary').click();
   await expect(card.locator('.gtd-move-item')).toHaveText([
-    'En cours',
+    'À faire',
     'En attente',
-    'Un jour peut-être',
   ]);
   await card.locator('.gtd-move-item', { hasText: 'En attente' }).click();
 
@@ -722,8 +740,8 @@ test('1.10 le doigt déplace une carte depuis sa poignée', async ({ browser }) 
   const page = await context.newPage();
   await page.goto('/');
 
-  const grip = cardIn(page, 'someday', 'b4').locator('.gtd-grip');
-  const target = col(page, 'waiting');
+  const grip = cardIn(page, 'waiting', 'b4').locator('.gtd-grip');
+  const target = col(page, 'in_progress');
   await grip.scrollIntoViewIfNeeded();
   await target.scrollIntoViewIfNeeded();
   const from = await grip.boundingBox();
@@ -737,12 +755,12 @@ test('1.10 le doigt déplace une carte depuis sa poignée', async ({ browser }) 
     { x: to.x + to.width / 2, y: Math.min(to.y + 120, to.y + to.height - 20) }
   );
 
-  await expect(cardIn(page, 'waiting', 'b4')).toHaveCount(1);
-  expect(await statusOf(page, 'domaine-b', 'b4')).toBe('waiting');
+  await expect(cardIn(page, 'in_progress', 'b4')).toHaveCount(1);
+  expect(await statusOf(page, 'domaine-b', 'b4')).toBe('in_progress');
 
-  // Back to En cours: a touch drop writes in_progress.
-  const gripBack = cardIn(page, 'waiting', 'b4').locator('.gtd-grip');
-  const targetBack = col(page, 'in_progress');
+  // Back to En attente: a touch drop writes waiting.
+  const gripBack = cardIn(page, 'in_progress', 'b4').locator('.gtd-grip');
+  const targetBack = col(page, 'waiting');
   await gripBack.scrollIntoViewIfNeeded();
   await targetBack.scrollIntoViewIfNeeded();
   const fromBack = await gripBack.boundingBox();
@@ -755,8 +773,8 @@ test('1.10 le doigt déplace une carte depuis sa poignée', async ({ browser }) 
     { x: toBack.x + toBack.width / 2, y: Math.min(toBack.y + 120, toBack.y + toBack.height - 20) }
   );
 
-  await expect(cardIn(page, 'in_progress', 'b4')).toHaveCount(1);
-  expect(await statusOf(page, 'domaine-b', 'b4')).toBe('in_progress');
+  await expect(cardIn(page, 'waiting', 'b4')).toHaveCount(1);
+  expect(await statusOf(page, 'domaine-b', 'b4')).toBe('waiting');
 
   await context.close();
 });

@@ -458,6 +458,37 @@ test('6.2 la restauration remplace l’espace et restitue l’état exporté', a
 });
 
 /* ------------------------------------------------------------------ */
+/* 6.2b Legacy someday restore                                         */
+/* ------------------------------------------------------------------ */
+
+test('6.2b une sauvegarde héritée avec someday est restaurée en En projet', async ({ browser }) => {
+  const context = await signedInBrowser(browser, stateA);
+  const doc = JSON.parse(JSON.stringify((await getBackup(context)).doc));
+  const alpha = findDomain(doc, 'Alpha');
+  const node = flattenNodes(alpha.projects).find((entry) => entry.title === 'Tâche sœur');
+  expect(node).toBeTruthy();
+  node.status = 'someday';
+
+  const response = await api(context, '/api/restore?confirm=replace', {
+    method: 'POST',
+    data: JSON.stringify(doc),
+    headers: { 'Content-Type': 'application/json' },
+  });
+  expect(response.status()).toBe(303);
+
+  const restored = (await getBackup(context)).doc;
+  const restoredNode = flattenNodes(findDomain(restored, 'Alpha').projects).find(
+    (entry) => entry.title === 'Tâche sœur'
+  );
+  expect(restoredNode.status).toBe('todo');
+  expect(restoredNode.id).toBe(node.id);
+  expect(restoredNode.collapsed).toBe(node.collapsed);
+  expect(restoredNode.children).toEqual(node.children);
+
+  await context.close();
+});
+
+/* ------------------------------------------------------------------ */
 /* 6.3 Refusals                                                        */
 /* ------------------------------------------------------------------ */
 

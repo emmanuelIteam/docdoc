@@ -7,8 +7,8 @@
 use crate::accounts::Account;
 use crate::config::DEFAULT_THEME_COLORS;
 use crate::model::{
-    ancestor_chain, ensure_display_order, find_node, hidden_node_ids, index_outline, status_icon,
-    status_label, Domain, DomainSummary, IndexEntry, Theme,
+    ancestor_chain, ensure_display_order, find_node, hidden_node_ids, index_outline,
+    rubrique_label, status_icon, status_label, Domain, DomainSummary, IndexEntry, Theme,
 };
 use crate::space::Space;
 
@@ -184,6 +184,9 @@ pub struct ShellOptions {
     pub help: bool,
     pub labels_bar: bool,
     pub ancestry: bool,
+    /// Domain pages only: the header offers the "add a project" control, which
+    /// inserts a new project at the head of the outline.
+    pub add_project: bool,
 }
 
 pub fn render_shell(
@@ -209,6 +212,13 @@ pub fn render_shell(
     } else {
         ""
     };
+    // The control lives in the shell, not in the outline: an htmx swap of
+    // `#outline` can never replace it, so it needs no client re-binding.
+    let add_project = if options.add_project {
+        "<button type=\"button\" class=\"btn-mini topbar-add\" id=\"add-project\" title=\"Ajouter un projet\" aria-label=\"Ajouter un projet\">+</button>"
+    } else {
+        ""
+    };
 
     format!(
         "<!doctype html>
@@ -227,6 +237,7 @@ pub fn render_shell(
       <header class=\"{topbar_class}\" id=\"topbar\">
         <button type=\"button\" class=\"btn sidebar-toggle\" id=\"sidebar-toggle\" title=\"Afficher/masquer le panneau\">☰</button>
         <h1>{title}</h1>
+        {add_project}
         {ancestry}
       </header>
       <main>{content}</main>
@@ -243,6 +254,7 @@ pub fn render_shell(
         slug = escape_html(active_slug),
         sidebar = render_sidebar(space, active_slug, options),
         topbar_class = topbar_class,
+        add_project = add_project,
         ancestry = ancestry,
         content = content
     )
@@ -477,7 +489,13 @@ pub fn render_labels_bar(space: &Space, domain: &Domain) -> String {
 /* ------------------------------------------------------------------ */
 
 fn status_button(slug: &str, node_id: &str, status: &str, current: &str) -> String {
-    let active = if current == status { " active" } else { "" };
+    // "En cours" is active for both sub-states of the active work: a `waiting`
+    // line shows the in-progress action, which brings it back to `in_progress`.
+    let active = if current == status || (status == "in_progress" && current == "waiting") {
+        " active"
+    } else {
+        ""
+    };
     let scope_js = format!(
         "js:{{status:\"{status}\", scope:window.outlineSubtreeHasSelected && window.outlineSubtreeHasSelected(this) ? \"subtree\" : \"head\"}}"
     );
@@ -496,7 +514,6 @@ fn line_status_class(status: &str) -> &'static str {
     match status {
         "in_progress" => "status-in-progress",
         "waiting" => "status-waiting",
-        "someday" => "status-someday",
         "done" => "status-done",
         _ => "",
     }
@@ -506,7 +523,7 @@ fn render_line(entry: &IndexEntry, id: &str, slug: &str, collapsed: bool) -> Str
     let status_class = line_status_class(&entry.status);
     let menu = format!(
         "<div class=\"menu\">\
-         {todo}{progress}{waiting}{someday}{done}\
+         {todo}{progress}{done}\
          <button type=\"button\" class=\"menu-item copy-link\" title=\"Copier le lien\">🔗</button>\
          <button type=\"button\" class=\"menu-item rename\" title=\"Renommer\">✎</button>\
          <button type=\"button\" class=\"menu-item\" hx-post=\"/domaine/{slug}/api/nodes/{id}/indent\" hx-target=\"#outline\" hx-swap=\"outerHTML\" title=\"Indenter\">→</button>\
@@ -516,8 +533,6 @@ fn render_line(entry: &IndexEntry, id: &str, slug: &str, collapsed: bool) -> Str
          </div>",
         todo = status_button(slug, id, "todo", &entry.status),
         progress = status_button(slug, id, "in_progress", &entry.status),
-        waiting = status_button(slug, id, "waiting", &entry.status),
-        someday = status_button(slug, id, "someday", &entry.status),
         done = status_button(slug, id, "done", &entry.status),
         slug = escape_html(slug),
         id = escape_html(id),
@@ -599,6 +614,7 @@ pub fn render_page(
             title: Some(domain.name.clone()),
             labels_bar: true,
             ancestry: true,
+            add_project: true,
             ..Default::default()
         },
     )
@@ -608,15 +624,14 @@ pub fn render_page(
 /* Accueil                                                             */
 /* ------------------------------------------------------------------ */
 
-const GTD_RUBRIQUES: [(&str, &str); 3] = [
-    ("in_progress", "En cours"),
-    ("waiting", "En attente"),
-    ("someday", "Un jour peut-être"),
-];
+// The two rubriques of the home board: the sub-states of "En cours". Their
+// labels come from `rubrique_label`, so the board and the help text cannot drift.
+const GTD_RUBRIQUES: [&str; 2] = ["in_progress", "waiting"];
 
 // The rubrique of a leaf line, or None when the line is not listed on the home
-// board. Only active statuses are listed: `in_progress`, `waiting` and
-// `someday`. `todo` (not started), done and lines with children never appear.
+// board. Only the two sub-states of "En cours" are listed: `in_progress`
+// ("À faire") and `waiting` ("En attente"). `todo` ("En projet"), `done`, legacy
+// `someday` (normalized to `todo`) and lines with children never appear.
 fn home_rubrique(node: &crate::model::Node) -> Option<&'static str> {
     if !node.children.is_empty() {
         return None;
@@ -624,16 +639,15 @@ fn home_rubrique(node: &crate::model::Node) -> Option<&'static str> {
     match node.status.as_str() {
         "in_progress" => Some("in_progress"),
         "waiting" => Some("waiting"),
-        "someday" => Some("someday"),
         _ => None,
     }
 }
 
-// Group every listed leaf into the three rubriques, in sidebar domain order and,
+// Group every listed leaf into the two rubriques, in sidebar domain order and,
 // inside a domain, in the outline's display order.
-fn home_tasks(space: &Space) -> [Vec<(Domain, crate::model::Node, Vec<IndexEntry>)>; 3] {
-    let mut buckets: [Vec<(Domain, crate::model::Node, Vec<IndexEntry>)>; 3] =
-        [Vec::new(), Vec::new(), Vec::new()];
+fn home_tasks(space: &Space) -> [Vec<(Domain, crate::model::Node, Vec<IndexEntry>)>; 2] {
+    let mut buckets: [Vec<(Domain, crate::model::Node, Vec<IndexEntry>)>; 2] =
+        [Vec::new(), Vec::new()];
     for summary in &space.domain_list {
         let Some(domain) = space.domains.get(&summary.id) else {
             continue;
@@ -652,8 +666,7 @@ fn home_tasks(space: &Space) -> [Vec<(Domain, crate::model::Node, Vec<IndexEntry
             };
             let bucket = match rubrique {
                 "in_progress" => 0,
-                "waiting" => 1,
-                _ => 2,
+                _ => 1,
             };
             buckets[bucket].push((domain.clone(), node, ancestor_chain(&index, &id)));
         }
@@ -693,13 +706,15 @@ fn home_task_card(
     );
     let choices = GTD_RUBRIQUES
         .iter()
-        .map(|(id, label)| {
-            if *id == rubrique {
+        .map(|id| {
+            let id = *id;
+            let label = rubrique_label(id);
+            if id == rubrique {
                 format!(
                     "<button type=\"button\" class=\"gtd-move-item current\" disabled aria-current=\"true\">{label}</button>"
                 )
             } else {
-                let status = *id;
+                let status = id;
                 let vals = escape_html(&format!(
                     "{{\"status\":\"{status}\",\"scope\":\"head\",\"vue\":\"accueil\"}}"
                 ));
@@ -741,7 +756,9 @@ fn home_task_card(
 pub fn render_home_board(space: &Space) -> String {
     let buckets = home_tasks(space);
     let mut columns = String::new();
-    for (index, (id, label)) in GTD_RUBRIQUES.iter().enumerate() {
+    for (index, id) in GTD_RUBRIQUES.iter().enumerate() {
+        let id = *id;
+        let label = rubrique_label(id);
         let entries = &buckets[index];
         let cards = entries
             .iter()
@@ -754,7 +771,7 @@ pub fn render_home_board(space: &Space) -> String {
         };
         columns.push_str(&format!(
             "<section class=\"gtd-column\" data-gtd=\"{id}\" aria-labelledby=\"gtd-{id}-heading\">\
-             <header class=\"gtd-column-head\"><h2 id=\"gtd-{id}-heading\">{label} <span class=\"gtd-count\">{count}</span></h2></header>\
+             <header class=\"gtd-column-head\"><h3 id=\"gtd-{id}-heading\">{label} <span class=\"gtd-count\">{count}</span></h3></header>\
              {body}\
              </section>",
             id = id,
@@ -764,7 +781,10 @@ pub fn render_home_board(space: &Space) -> String {
         ));
     }
     format!(
-        "<div id=\"home-board\" class=\"gtd-board\" aria-label=\"Rubriques GTD\">{columns}</div>"
+        "<div id=\"home-board\" class=\"gtd-board-wrap\" aria-label=\"Tâches en cours\">\
+         <h2 class=\"gtd-group-title\">En cours</h2>\
+         <div class=\"gtd-board\">{columns}</div>\
+         </div>"
     )
 }
 
@@ -1147,9 +1167,14 @@ pub fn render_guide_page(space: &Space, app_version: &str) -> String {
     <p class=\"guide-intro\">Cette page rassemble les gestes disponibles dans l'outline, du plus courant au plus spécifique.</p>
 
     <section class=\"guide-section\">
+      <h2>Changer l'état d'une tâche</h2>
+      <p>Le menu d'une ligne propose trois états : « En projet » pour une tâche non commencée, « En cours » pour une tâche engagée, et « Terminé » pour une tâche achevée. « En cours » se décline en deux sous-états — « À faire » et « En attente » — qui se choisissent depuis la page d'accueil, pas depuis le menu de la ligne. Une tâche « En attente » apparaît donc avec « En cours » actif dans le menu ; la choisir la ramène à « À faire ».</p>
+    </section>
+
+    <section class=\"guide-section\">
       <h2>Classer les tâches par rubrique GTD</h2>
-      <p>La page d'accueil, à la racine, présente trois rubriques : « En cours » pour les tâches commencées, « En attente » pour celles qui dépendent d'un tiers, et « Un jour peut-être » pour les idées mises de côté. Seules les tâches feuilles actives y figurent : une tâche à faire (non commencée) n'apparaît qu'après avoir été passée à « En cours » depuis son domaine, et les tâches terminées comme les lignes mères ne sont pas listées.</p>
-      <p>Glissez une carte d'une rubrique à une autre, à la souris ou avec la poignée sur un écran tactile. Le menu « Changer de rubrique » de chaque carte fait la même chose au clavier. Cliquez sur le titre d'une carte pour ouvrir la tâche dans son domaine, avec ses tâches mères dépliées et la ligne mise en évidence.</p>
+      <p>La page d'accueil, à la racine, présente les deux sous-états d'« En cours » : « À faire » pour les tâches actionnables et « En attente » pour celles qui dépendent d'un tiers. Seules les tâches feuilles « À faire » ou « En attente » y figurent : une tâche « En projet » n'apparaît qu'après avoir été passée à « En cours » depuis son domaine, et les tâches terminées comme les lignes mères ne sont pas listées. Une tâche héritée « Un jour peut-être » est lue comme « En projet » et n'est donc pas listée.</p>
+      <p>Glissez une carte d'une rubrique à l'autre, à la souris ou avec la poignée sur un écran tactile. Le menu « Changer de rubrique » de chaque carte fait la même chose au clavier. Cliquez sur le titre d'une carte pour ouvrir la tâche dans son domaine, avec ses tâches mères dépliées et la ligne mise en évidence.</p>
     </section>
 
     <section class=\"guide-section\">
@@ -1182,6 +1207,11 @@ pub fn render_guide_page(space: &Space, app_version: &str) -> String {
     <section class=\"guide-section\">
       <h2>Renommer une ligne</h2>
       <p>Cliquez sur un titre hors lien pour ouvrir son édition, ou utilisez l'action ✎ (« Renommer ») du menu.</p>
+    </section>
+
+    <section class=\"guide-section\">
+      <h2>Ajouter un projet</h2>
+      <p>Le bouton + de l'en-tête d'une page de domaine ajoute un projet : la nouvelle ligne est insérée en tête de la liste, avant tous les autres projets et leurs sous-tâches, et son titre s'ouvre en édition avec « Nouveau projet » sélectionné pour le nommer directement. Le bouton reste dans l'en-tête pendant le défilement de la page.</p>
     </section>
 
     <section class=\"guide-section\">
@@ -1504,6 +1534,30 @@ mod tests {
     }
 
     #[test]
+    fn status_menu_offers_three_states_and_marks_en_cours_for_waiting() {
+        use crate::model::IndexEntry;
+        let entry = IndexEntry {
+            parent: None,
+            depth: 0,
+            title: "Tâche".to_string(),
+            status: "waiting".to_string(),
+            collapsed: false,
+            has_children: false,
+        };
+        let html = render_line(&entry, "n1", "maison", false);
+        assert!(html.contains("title=\"En projet\""));
+        assert!(html.contains("title=\"En cours\""));
+        assert!(html.contains("title=\"Terminé\""));
+        assert!(!html.contains("title=\"En attente\""));
+        assert!(!html.contains("Un jour peut-être"));
+        // Three status actions plus the six structural actions.
+        assert_eq!(html.matches("class=\"menu-item").count(), 9);
+        // A waiting line is shown as the "En cours" project state.
+        assert!(html.contains("class=\"menu-item active\""));
+        assert!(html.contains("status-waiting"));
+    }
+
+    #[test]
     fn home_board_groups_leaves_and_skips_parents_and_done() {
         use crate::model::{Domain, DomainSummary, Node};
         use crate::space::Space;
@@ -1569,14 +1623,16 @@ mod tests {
 
         let html = render_home_board(&space);
         assert!(html.contains("id=\"home-board\""));
+        assert!(html.contains("class=\"gtd-group-title\">En cours</h2>"));
         assert!(html.contains("data-gtd=\"in_progress\""));
         assert!(html.contains("data-gtd=\"waiting\""));
-        assert!(html.contains("data-gtd=\"someday\""));
+        assert!(!html.contains("data-gtd=\"someday\""));
         assert!(html.contains("id=\"gtd-node-a1-1\""));
         assert!(html.contains("id=\"gtd-node-a2\""));
-        assert!(html.contains("id=\"gtd-node-a3\""));
+        assert!(!html.contains("id=\"gtd-node-a3\""));
         assert!(html.contains("id=\"gtd-node-a6\""));
-        // The parent, the done line and the todo line never become cards.
+        // The parent, the done line, the todo line and the legacy someday line
+        // never become cards.
         assert!(!html.contains("id=\"gtd-node-a1\""));
         assert!(!html.contains("id=\"gtd-node-a4\""));
         assert!(!html.contains("id=\"gtd-node-a5\""));

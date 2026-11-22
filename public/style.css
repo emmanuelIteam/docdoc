@@ -250,6 +250,19 @@ main { overflow-anchor: none; }
   white-space: nowrap;
 }
 
+/* Add-project control of a domain page. It sits in the sticky header, pushed to
+   the right of the domain name, and never shrinks: a long name is ellipsized
+   above instead of squeezing the button out of the header. Its target keeps the
+   24x24 size of `.btn-mini` (WCAG 2.2 AA, 2.5.8), which the sticky header keeps
+   reachable while the page scrolls. */
+.topbar-add {
+  margin-left: auto;
+  flex: 0 0 auto;
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+.topbar-add:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
 /* Pinned parent-task rows, filled by `public/app.js` from the first visible
    line. Each row has the same anatomy as an outline line: same bullet slot,
    same gap, same indentation and same typography, so a task crossing the bar
@@ -368,14 +381,18 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
 /* ------------------------------------------------------------------ */
 /* Home page: the three GTD rubriques                                  */
 /*                                                                     */
-/* Three columns on a wide screen, stacked on a narrow one. A card is  */
+/* Two columns on a wide screen, stacked on a narrow one. A card is     */
 /* a draggable tile: a grip, the deep link of the title, the domain    */
 /* badge and parent chain, then a rubrique menu for keyboard users.    */
 /* ------------------------------------------------------------------ */
 
+.gtd-group-title {
+  margin: 0 0 .55rem;
+  font-size: 1.05rem;
+}
 .gtd-board {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: .85rem;
   align-items: start;
   max-width: 72rem;
@@ -391,7 +408,7 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
   border-radius: .65rem;
   transition: background .12s ease, box-shadow .12s ease;
 }
-.gtd-column-head h2 {
+.gtd-column-head h3 {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -594,16 +611,11 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
   border: 0;
 }
 
-/* The in-progress title keeps its bold, but the two new GTD statuses also
-   need a non-colour cue: a dotted or double underline, always visible. */
+/* The "En attente" sub-state needs a non-colour cue distinct from the bold
+   "En cours" marking: a dotted underline, always visible. */
 .title.status-waiting {
   color: #a16207;
   text-decoration: underline dotted;
-  text-underline-offset: 2px;
-}
-.title.status-someday {
-  color: #7c3aed;
-  text-decoration: underline double;
   text-underline-offset: 2px;
 }
 

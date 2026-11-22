@@ -5,7 +5,7 @@ TBD - created by archiving change add-projects-outliner. Update Purpose after ar
 ## Requirements
 ### Requirement: Create a node
 
-The system SHALL allow the user to create a new project as a level-1 line by adding a sibling to an existing level-1 line, and a new task or subtask as a child of an existing line, and SHALL reveal the newly created line immediately. When a child is created from the line's context menu, the system SHALL open the new line in edit mode with its default title `Nouvelle tâche` selected, so that typing replaces it. A domain SHALL already hold a default project when it is created (see "Keep at least one project line").
+The system SHALL allow the user to create a new project as a level-1 line by adding a sibling to an existing level-1 line, and a new task or subtask as a child of an existing line, and SHALL reveal the newly created line immediately. When a child is created from the line's context menu, the system SHALL open the new line in edit mode with its default title `Nouvelle tâche` selected, so that typing replaces it. A domain SHALL already hold a default project when it is created (see "Keep at least one project line"). The system SHALL also allow the user to create a new project from the add control of the domain page. That new level-1 line SHALL be inserted at the head of the outline — before every other line, including the sub-lines of the former first project — and at the head of the persisted display order. It SHALL be opened in edit mode with its whole default title `Nouveau projet` selected, so that the first keystroke replaces it, and it SHALL be brought into view when the page is scrolled. A single activation of the control SHALL create at most one project.
 
 #### Scenario: Create a new project
 
@@ -16,6 +16,31 @@ The system SHALL allow the user to create a new project as a level-1 line by add
 
 - **WHEN** the user presses Enter on a level-1 line
 - **THEN** a new level-1 line is inserted right after it, at the same level
+
+#### Scenario: Create a project from the domain page
+
+- **WHEN** the user activates the add control of a domain page
+- **THEN** a new level-1 line titled `Nouveau projet` is inserted before every other line of the outline
+
+#### Scenario: The new project is inserted above a project that has sub-lines
+
+- **WHEN** the first line of the domain has sub-lines and the user activates the add control
+- **THEN** the new level-1 line appears above the former first project and above all of its sub-lines
+
+#### Scenario: The new project opens its title for naming
+
+- **WHEN** the add control of a domain page has created a project
+- **THEN** that line is opened in edit mode with its whole default title selected, so that typing replaces `Nouveau projet`
+
+#### Scenario: The head position persists after a reload
+
+- **WHEN** a project created from the domain page has been named, and the page is reloaded
+- **THEN** that project is still the first line of the outline, before the projects and sub-lines that preceded it
+
+#### Scenario: A double activation creates a single project
+
+- **WHEN** the user activates the add control twice before the first creation has completed
+- **THEN** exactly one project is created
 
 #### Scenario: Create a child node
 
