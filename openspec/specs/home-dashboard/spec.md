@@ -94,45 +94,6 @@ Le système SHALL afficher sur la page d'accueil le texte visible d'un titre qui
 - **WHEN** une tâche mère de la chaîne a pour titre `Voir [Tache 3](/domaine/projets?reveal=a1b2#node-a1b2)`
 - **THEN** sa seconde ligne affiche « Voir Tache 3 » comme texte, sans ancre imbriquée dans le lien de l'entrée
 
-### Requirement: Atteindre la page d'accueil depuis le panneau latéral
-
-Le système SHALL afficher une entrée « Accueil » pointant vers `/` dans une rubrique propre, en tête du panneau latéral, placée avant le titre « Domaines » et avant la liste des domaines. L'entrée SHALL NOT être répétée dans le pied du panneau. L'entrée SHALL être marquée active (classe `active` et `aria-current="page"`) sur la page d'accueil et SHALL NOT l'être sur les autres pages. La sélection de l'entrée SHALL NOT replier le panneau latéral, y compris sur un écran étroit, comme celles d'Administration et d'Aide.
-
-#### Scenario: L'entrée Accueil est présente sur toute page
-
-- **WHEN** une page est rendue pour un compte authentifié
-- **THEN** le panneau latéral contient une entrée « Accueil » dont le `href` est `/`
-
-#### Scenario: L'entrée est en tête du panneau
-
-- **WHEN** une page est rendue pour un compte authentifié
-- **THEN** l'entrée « Accueil » précède le titre « Domaines » et la liste des domaines dans le panneau latéral
-
-#### Scenario: L'entrée n'est pas répétée dans le pied du panneau
-
-- **WHEN** une page est rendue pour un compte authentifié
-- **THEN** le pied du panneau ne contient aucune entrée « Accueil »
-
-#### Scenario: L'entrée est active sur la page d'accueil
-
-- **WHEN** la page d'accueil est affichée
-- **THEN** l'entrée « Accueil » porte la classe `active` et `aria-current="page"`
-
-#### Scenario: L'entrée n'est pas active sur une page de domaine
-
-- **WHEN** la page d'un domaine est affichée
-- **THEN** l'entrée « Accueil » ne porte ni la classe `active` ni `aria-current`
-
-#### Scenario: L'entrée mène à l'accueil
-
-- **WHEN** l'utilisateur active l'entrée « Accueil » depuis une page de domaine
-- **THEN** la page d'accueil est affichée à la racine
-
-#### Scenario: Le panneau reste ouvert au clic sur un écran étroit
-
-- **WHEN** dans une fenêtre de 390 px de large, le panneau latéral est ouvert et l'utilisateur active l'entrée « Accueil »
-- **THEN** la page d'accueil est affichée et le panneau latéral reste ouvert
-
 ### Requirement: Rappeler le domaine et la hiérarchie des tâches mères de chaque tâche
 
 Le système SHALL afficher sur chaque entrée de la page d'accueil, sur une seconde ligne distincte de celle du titre, le nom du domaine de la tâche puis la hiérarchie de ses tâches mères : la chaîne de ses ancêtres depuis le projet de niveau 1 jusqu'à son parent immédiat, dans l'ordre de lecture de haut en bas. Le nom du domaine et la chaîne SHALL être visibles sans survol et sans interaction. Lorsque la tâche n'a aucun parent, la seconde ligne SHALL afficher le nom du domaine seul. Le nom du domaine SHALL permettre de distinguer deux tâches de même titre appartenant à des domaines différents, et la chaîne de parents SHALL distinguer deux tâches de même titre appartenant à deux branches d'un même domaine. La chaîne SHALL NOT être tronquée : elle revient à la ligne lorsque la largeur disponible ne suffit pas.
@@ -335,22 +296,22 @@ Le système SHALL afficher les deux rubriques GTD « À faire » et « En attent
 
 #### Scenario: Des domaines mais aucune tâche
 
-- **WHEN** le compte a des domaines mais aucune ligne feuille active
+- **WHEN** le compte a des domaines mais aucune ligne active, feuille ou mère
 - **THEN** la page d'accueil affiche les deux rubriques, chacune avec un message indiquant qu'aucune tâche n'y est classée
 
 #### Scenario: Seules des tâches mères existent
 
-- **WHEN** le compte a des domaines et que leurs seules lignes actives possèdent des enfants
-- **THEN** les deux rubriques sont affichées et aucune carte n'y figure
+- **WHEN** le compte a des domaines et que leurs seules lignes actives sont des tâches mères dont aucun descendant n'est actif
+- **THEN** les deux rubriques sont affichées et une carte représente chaque tâche mère active
 
 #### Scenario: Seules des tâches En projet existent
 
-- **WHEN** le compte a des domaines et que toutes leurs lignes feuilles ont le statut `todo`
+- **WHEN** le compte a des domaines et que toutes leurs lignes ont le statut `todo`
 - **THEN** les deux rubriques sont affichées et aucune carte n'y figure
 
 #### Scenario: Seules des tâches terminées existent
 
-- **WHEN** le compte a des domaines et que toutes leurs lignes feuilles sont terminées
+- **WHEN** le compte a des domaines et que toutes leurs lignes sont terminées
 - **THEN** les deux rubriques sont affichées et aucune carte n'y figure
 
 #### Scenario: Les deux rubriques sont regroupées sous En cours
@@ -363,9 +324,9 @@ Le système SHALL afficher les deux rubriques GTD « À faire » et « En attent
 - **WHEN** l'utilisateur ouvre `/` avec au moins un domaine
 - **THEN** la réponse est le tableau des deux rubriques, sans redirection
 
-### Requirement: Classer les tâches feuilles dans deux rubriques GTD
+### Requirement: Classer les lignes actives dans deux rubriques GTD
 
-Le système SHALL classer chaque ligne feuille active d'un domaine actif dans exactement une rubrique GTD : « À faire » pour `in_progress` et « En attente » pour `waiting`. Une ligne feuille est une ligne dont la liste `children` est vide ou absente. Le système SHALL NOT lister une ligne `todo` (« En projet »), une ligne mère, une ligne `done`, une ligne d'un domaine archivé, ni une ligne héritée au statut `someday`, qui est lue comme `todo`.
+Le système SHALL classer chaque ligne active sans descendant actif dans exactement une rubrique GTD : « À faire » pour `in_progress`, « En attente » pour `waiting`. Une ligne mère active dont aucun descendant n'est actif est donc listée. Une ligne active dont au moins un descendant est actif SHALL NOT l'être : la branche est représentée par sa ligne active la plus profonde. Le système SHALL NOT lister une ligne `todo` (« En projet »), une ligne `done`, une ligne d'un domaine archivé, ni une ligne héritée au statut `someday`, qui est lue comme `todo`.
 
 #### Scenario: Une tâche À faire est classée dans À faire
 
@@ -377,29 +338,49 @@ Le système SHALL classer chaque ligne feuille active d'un domaine actif dans ex
 - **WHEN** une ligne feuille a le statut `waiting`
 - **THEN** sa carte apparaît dans la rubrique « En attente »
 
+#### Scenario: Une tâche mère active sans descendant actif est listée
+
+- **WHEN** une ligne mère a le statut `in_progress` et que toutes ses sous-tâches sont `todo` ou `done`
+- **THEN** sa carte apparaît dans « À faire », avec le nom du domaine puis ses propres ancêtres sur la seconde ligne
+
+#### Scenario: Une tâche mère dont un descendant est actif n'est pas listée
+
+- **WHEN** une ligne mère a le statut `in_progress` et qu'au moins un de ses descendants a le statut `in_progress` ou `waiting`
+- **THEN** aucune carte ne représente la mère, et la branche est représentée par la carte de sa ligne active la plus profonde
+
+#### Scenario: Une branche active ne produit qu'une carte
+
+- **WHEN** une tâche mère et sa sous-tâche sont toutes deux `in_progress` et que la sous-tâche n'a aucun enfant actif
+- **THEN** seule la carte de la sous-tâche est listée, et sa seconde ligne rappelle la tâche mère
+
+#### Scenario: Une sous-tâche active sous une mère En projet est listée
+
+- **WHEN** une ligne mère a le statut `todo` et que sa sous-tâche a le statut `waiting`
+- **THEN** seule la carte de la sous-tâche est listée, dans « En attente »
+
 #### Scenario: Une tâche En projet n'est pas listée
 
-- **WHEN** une ligne feuille a le statut `todo`
+- **WHEN** une ligne a le statut `todo`, qu'elle soit feuille ou mère
 - **THEN** aucune carte ne la représente dans l'une des deux rubriques
 
 #### Scenario: Une tâche héritée Un jour peut-être n'est pas listée
 
-- **WHEN** une ligne feuille porte le statut hérité `someday`
+- **WHEN** une ligne porte le statut hérité `someday`
 - **THEN** elle est lue comme `todo` et aucune carte ne la représente dans l'une des deux rubriques
 
 #### Scenario: Une tâche terminée n'est listée nulle part
 
-- **WHEN** une ligne feuille a le statut `done`
+- **WHEN** une ligne a le statut `done`
 - **THEN** aucune carte ne la représente dans l'une des deux rubriques
 
 #### Scenario: Une tâche mère n'est pas listée
 
-- **WHEN** une ligne possède au moins un enfant, quel que soit son statut
+- **WHEN** une ligne mère a le statut `todo` ou `done`, qu'elle ait des enfants ou non
 - **THEN** elle n'apparaît dans aucune des deux rubriques
 
 #### Scenario: Une sous-tâche feuille profonde est listée
 
-- **WHEN** une sous-tâche sans enfant de profondeur 2 a le statut `in_progress`
+- **WHEN** une sous-tâche sans enfant de profondeur 2 a le statut `in_progress` et qu'aucun de ses descendants n'est actif
 - **THEN** sa carte apparaît dans « À faire », avec sa chaîne de parents
 
 #### Scenario: Une feuille sous un ancêtre replié est listée
@@ -414,7 +395,7 @@ Le système SHALL classer chaque ligne feuille active d'un domaine actif dans ex
 
 #### Scenario: Une tâche d'un domaine archivé est absente
 
-- **WHEN** un domaine est archivé alors qu'il contenait une ligne feuille `in_progress`
+- **WHEN** un domaine est archivé alors qu'il contenait une ligne active
 - **THEN** cette tâche n'apparaît dans aucune rubrique de la page d'accueil
 
 ### Requirement: Réordonner une carte par glisser-déposer dans sa rubrique
@@ -492,7 +473,7 @@ Le système SHALL afficher sur chaque carte deux contrôles accessibles, une fl�
 
 ### Requirement: Refuser un positionnement invalide sans rien modifier
 
-Le système SHALL refuser sans rien modifier une demande de positionnement dont la rubrique n'est pas l'une des deux rubriques, dont la tâche n'appartient pas au compte ou dont la tâche n'est pas une feuille active listée sur le tableau. Une position numérique hors bornes SHALL être ramenée à la première ou à la dernière position de la rubrique. Le refus SHALL répondre 400 ou 404 selon le cas.
+Le système SHALL refuser sans rien modifier une demande de positionnement dont la rubrique n'est pas l'une des deux rubriques, dont la tâche n'appartient pas au compte ou dont la tâche n'est pas une ligne active listée sur le tableau — une ligne active sans descendant actif. Une position numérique hors bornes SHALL être ramenée à la première ou à la dernière position de la rubrique. Le refus SHALL répondre 400 ou 404 selon le cas.
 
 #### Scenario: Une rubrique inconnue est refusée
 
@@ -501,8 +482,13 @@ Le système SHALL refuser sans rien modifier une demande de positionnement dont 
 
 #### Scenario: Une tâche non listée est refusée
 
-- **WHEN** une demande de positionnement vise une tâche terminée, en projet ou une ligne mère
+- **WHEN** une demande de positionnement vise une tâche terminée, en projet, ou une tâche mère dont un descendant est actif
 - **THEN** la réponse est 400 et aucun ordre n'est modifié
+
+#### Scenario: Une tâche mère listée est acceptée
+
+- **WHEN** une demande de positionnement vise une tâche mère active sans descendant actif
+- **THEN** le positionnement est accepté et l'ordre est enregistré
 
 #### Scenario: Une tâche d'un autre compte est refusée
 
@@ -513,4 +499,121 @@ Le système SHALL refuser sans rien modifier une demande de positionnement dont 
 
 - **WHEN** une demande de positionnement porte une position supérieure au nombre de cartes de la rubrique
 - **THEN** la carte est placée en dernière position et aucun autre ordre n'est modifié
+
+### Requirement: Atteindre la page GTD depuis le panneau latéral
+
+Le système SHALL afficher une entrée « GTD » pointant vers `/` dans une rubrique propre, en tête du panneau latéral, placée avant le titre « Domaines » et avant la liste des domaines. L'entrée SHALL NOT être répétée dans le pied du panneau. L'entrée SHALL être marquée active (classe `active` et `aria-current="page"`) sur la page GTD et SHALL NOT l'être sur les autres pages. Comme les autres entrées du panneau qui ouvrent une page, sa sélection SHALL suivre la règle de repli du panneau définie par l'exigence de navigation du panneau : sur un écran étroit, la page demandée est chargée puis le panneau se replie ; sur un écran large, l'état du panneau reste inchangé.
+
+#### Scenario: L'entrée GTD est présente sur toute page
+
+- **WHEN** une page est rendue pour un compte authentifié
+- **THEN** le panneau latéral contient une entrée « GTD » dont le `href` est `/`
+
+#### Scenario: L'entrée est en tête du panneau
+
+- **WHEN** une page est rendue pour un compte authentifié
+- **THEN** l'entrée « GTD » précède le titre « Domaines » et la liste des domaines dans le panneau latéral
+
+#### Scenario: L'entrée n'est pas répétée dans le pied du panneau
+
+- **WHEN** une page est rendue pour un compte authentifié
+- **THEN** le pied du panneau ne contient aucune entrée « GTD »
+
+#### Scenario: L'entrée est active sur la page GTD
+
+- **WHEN** la page GTD est affichée à la racine
+- **THEN** l'entrée « GTD » porte la classe `active` et `aria-current="page"`
+
+#### Scenario: L'entrée n'est pas active sur une page de domaine
+
+- **WHEN** la page d'un domaine est affichée
+- **THEN** l'entrée « GTD » ne porte ni la classe `active` ni `aria-current`
+
+#### Scenario: L'entrée mène à la page GTD
+
+- **WHEN** l'utilisateur active l'entrée « GTD » depuis une page de domaine
+- **THEN** la page GTD est affichée à la racine
+
+#### Scenario: Le panneau se replie après le clic sur un écran étroit
+
+- **WHEN** dans une fenêtre de 390 px de large, le panneau latéral est ouvert et l'utilisateur active l'entrée « GTD »
+- **THEN** la page GTD est chargée, puis le panneau latéral se replie
+
+#### Scenario: Un écran large garde le panneau ouvert
+
+- **WHEN** dans une fenêtre de 1280 px de large, l'utilisateur active l'entrée « GTD »
+- **THEN** la page GTD est affichée et le panneau latéral reste ouvert
+
+### Requirement: Afficher le titre et le sous-titre de la page GTD
+
+Le système SHALL afficher « GTD » comme titre de la page servie à la racine, à la fois dans l'en-tête de la page et dans le titre du document, et SHALL afficher, immédiatement sous ce titre, le sous-titre « Getting Things Done ». Le sous-titre SHALL être visible sans survol ni interaction et SHALL NOT apparaître sur une autre page. Le titre et le sous-titre SHALL être affichés y compris lorsque le compte n'a encore aucun domaine.
+
+#### Scenario: La page GTD affiche son titre et son sous-titre
+
+- **WHEN** un utilisateur connecté ouvre `/`
+- **THEN** l'en-tête affiche le titre « GTD » et, sous lui, le sous-titre « Getting Things Done »
+
+#### Scenario: Le sous-titre est placé sous le titre
+
+- **WHEN** la page GTD est rendue
+- **THEN** le sous-titre suit le titre dans l'en-tête, sur la ligne du dessous, sans être séparé de lui par le contenu principal
+
+#### Scenario: Le titre du document est GTD
+
+- **WHEN** la page GTD est rendue
+- **THEN** le titre du document est « GTD »
+
+#### Scenario: Le sous-titre est absent des autres pages
+
+- **WHEN** une page de domaine, la page Administration ou la page Aide est rendue
+- **THEN** aucune page n'affiche le sous-titre « Getting Things Done »
+
+#### Scenario: L'état vide garde le titre et le sous-titre
+
+- **WHEN** le compte n'a aucun domaine et que l'utilisateur ouvre `/`
+- **THEN** l'en-tête affiche « GTD » et « Getting Things Done » au-dessus de l'état vide invitant à créer un domaine
+
+### Requirement: Atteindre la page GTD depuis l'en-tête des autres pages
+
+Le système SHALL afficher dans l'en-tête de chaque page rendue par la coque autre que la page GTD — une page de domaine, la page Administration et la page Aide — un raccourci « GTD » vers `/`, placé immédiatement à droite du bouton d'affichage/masquage du panneau (☰) et avant le titre de la page. La page GTD SHALL NOT afficher ce raccourci : son titre « GTD » occupe déjà cette position et désigne la page courante, de sorte qu'un lien vers elle-même n'y apporterait aucune information. Le raccourci SHALL être un lien dont le texte visible est « GTD », SHALL ne porter ni la classe `active` ni `aria-current="page"`, SHALL être activable au clavier, et SHALL rester visible et utilisable quand le panneau latéral est replié. Son activation SHALL charger la page GTD sans modifier l'état du panneau latéral. La page de gestion des passkeys, qui n'a ni en-tête ni bouton menu, n'est pas concernée.
+
+#### Scenario: Le raccourci est présent sur les pages de la coque autres que la GTD
+
+- **WHEN** une page de domaine, la page Administration ou la page Aide est rendue
+- **THEN** l'en-tête contient un lien « GTD » vers `/`
+
+#### Scenario: La page GTD n'affiche pas de raccourci vers elle-même
+
+- **WHEN** la page GTD est rendue
+- **THEN** son en-tête ne contient aucun lien vers `/` et affiche seulement le bouton ☰ puis le titre « GTD » et son sous-titre
+
+#### Scenario: Le raccourci est à droite du bouton menu
+
+- **WHEN** une page de la coque autre que la page GTD est rendue
+- **THEN** le raccourci « GTD » suit immédiatement le bouton ☰ dans l'en-tête, avant le titre de la page
+
+#### Scenario: Le raccourci mène à la page GTD
+
+- **WHEN** l'utilisateur active le raccourci « GTD » depuis la page d'un domaine
+- **THEN** la page GTD est affichée à la racine
+
+#### Scenario: Le raccourci n'est pas marqué comme la page courante
+
+- **WHEN** une page de la coque autre que la page GTD est rendue
+- **THEN** le raccourci ne porte ni la classe `active` ni `aria-current="page"`
+
+#### Scenario: Le raccourci reste visible quand le panneau est replié
+
+- **WHEN** le panneau latéral est replié sur un écran de 390 px de large
+- **THEN** le raccourci « GTD » reste affiché dans l'en-tête et activable
+
+#### Scenario: Le raccourci s'active au clavier
+
+- **WHEN** le raccourci « GTD » reçoit le focus au clavier et que l'utilisateur appuie sur `Entrée`
+- **THEN** la page GTD est affichée
+
+#### Scenario: Le raccourci ne change pas l'état du panneau
+
+- **WHEN** dans une fenêtre de 390 px de large, le panneau latéral est ouvert et l'utilisateur active le raccourci « GTD »
+- **THEN** la page GTD est chargée et l'état d'ouverture du panneau n'est pas modifié par le raccourci
 

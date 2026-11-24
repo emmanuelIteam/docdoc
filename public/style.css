@@ -271,21 +271,16 @@ main { overflow-anchor: none; }
   text-overflow: ellipsis;
 }
 
-/* GTD shortcut: right of the panel toggle, before the title, on every page.
-   Compact so it lines up with the toggle, and never shrinks. Its active state
-   mirrors the sidebar entry of the same page. `.btn.` keeps the specificity
-   above the generic `.btn` rules defined later in the file. */
+/* GTD shortcut: right of the panel toggle, before the title, on every shell page
+   except the GTD page itself — there the title next to it already says "GTD".
+   Compact so it lines up with the toggle, and never shrinks. `.btn.` keeps the
+   specificity above the generic `.btn` rules defined later in the file. */
 .btn.topbar-shortcut {
   flex: 0 0 auto;
   padding: .45rem .55rem;
   font-size: .8rem;
   font-weight: 600;
   text-decoration: none;
-}
-.btn.topbar-shortcut.active {
-  background: #eef2ff;
-  border-color: var(--accent);
-  color: var(--accent-dark);
 }
 .btn.topbar-shortcut:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 

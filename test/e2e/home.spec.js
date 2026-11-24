@@ -559,16 +559,23 @@ test('1.4c le sous-titre ne quitte pas la page GTD, même sans domaine', async (
 /* 1.4d The GTD shortcut in the header                                 */
 /* ------------------------------------------------------------------ */
 
-test('1.4d le raccourci GTD est dans l’en-tête de chaque page et n’est actif que sur /', async ({ browser }) => {
+test('1.4d le raccourci GTD est absent de la page GTD et présent dans l’en-tête des autres pages', async ({ browser }) => {
   const { context, page } = await signedInPage(browser, stateA);
 
-  for (const pagePath of ['/', '/domaine/domaine-a', '/administration', '/aide']) {
+  // The GTD page never links to itself from the header: the title next to the
+  // toggle already says « GTD ».
+  await page.goto('/');
+  await expect(page.locator('.topbar h1')).toHaveText('GTD');
+  await expect(page.locator('.topbar-shortcut')).toHaveCount(0);
+
+  for (const pagePath of ['/domaine/domaine-a', '/administration', '/aide']) {
     await page.goto(pagePath);
     const shortcut = page.locator('.topbar-shortcut');
     await expect(shortcut).toHaveCount(1);
     await expect(shortcut).toHaveText('GTD');
     await expect(shortcut).toHaveAttribute('href', '/');
     await expect(shortcut).toHaveAttribute('title', 'Page GTD — Getting Things Done');
+    await expect(shortcut).not.toHaveAttribute('aria-current', 'page');
 
     // Immediately right of the panel toggle, before the title.
     const followsToggle = await page.evaluate(() => {
@@ -577,14 +584,6 @@ test('1.4d le raccourci GTD est dans l’en-tête de chaque page et n’est acti
       return Boolean(next && next.classList.contains('topbar-shortcut'));
     });
     expect(followsToggle).toBe(true);
-
-    if (pagePath === '/') {
-      await expect(shortcut).toHaveClass(/active/);
-      await expect(shortcut).toHaveAttribute('aria-current', 'page');
-    } else {
-      await expect(shortcut).not.toHaveClass(/active/);
-      await expect(shortcut).not.toHaveAttribute('aria-current', 'page');
-    }
   }
 
   // From a domain page, the shortcut opens the GTD page at the root.
@@ -592,6 +591,7 @@ test('1.4d le raccourci GTD est dans l’en-tête de chaque page et n’est acti
   await page.locator('.topbar-shortcut').click();
   await expect(page).toHaveURL(/\/(\?.*)?$/);
   await expect(page.locator('.topbar h1')).toHaveText('GTD');
+  await expect(page.locator('.topbar-shortcut')).toHaveCount(0);
 
   await context.close();
 });

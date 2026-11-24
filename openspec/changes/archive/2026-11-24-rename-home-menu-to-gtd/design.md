@@ -13,7 +13,7 @@ Le libellé « Accueil » apparaît aussi dans deux capacités : `home-dashboard
 **Goals:**
 
 - Un seul nom pour la page : « GTD » dans le panneau, dans le `<h1>` et dans le titre du document ; « Getting Things Done » en sous-titre de la page.
-- Un raccourci « GTD » dans l'en-tête de toutes les pages de la coque, à droite du bouton ☰, donc visible même quand le panneau est replié, sur écran étroit compris.
+- Un raccourci « GTD » dans l'en-tête des pages de la coque autres que la page GTD, à droite du bouton ☰, donc visible même quand le panneau est replié, sur écran étroit compris.
 - Un sous-titre affiché sur la seule page GTD, lisible sans JavaScript et sans interaction.
 - Aucune route, aucun format de donnée, aucune dépendance, aucune migration ; comportement identique en Node et en Rust.
 
@@ -65,9 +65,9 @@ Le raccourci est rendu par `render_shell` / `renderShell`, pas par une page :
 <a class="btn topbar-shortcut" href="/" title="Page GTD — Getting Things Done">GTD</a>
 ```
 
-Il est placé immédiatement après `#sidebar-toggle` et avant le bloc de titre, sur toutes les pages de la coque. Un seul point de rendu suffit donc, aucune page ne peut l'oublier, et il n'est jamais dupliqué par un swap htmx puisqu'il vit hors de `#outline` et hors de `#home-board`.
+Il est placé immédiatement après `#sidebar-toggle` et avant le bloc de titre, sur les pages de la coque autres que la page GTD. Un seul point de rendu suffit donc, aucune page ne peut l'oublier, et il n'est jamais dupliqué par un swap htmx puisqu'il vit hors de `#outline` et hors de `#home-board`.
 
-Sur la page GTD, il porte en plus la classe `active` et `aria-current="page"`, exactement comme l'entrée du panneau : les deux contrôles désignent la page courante et restent cohérents. Sur les autres pages, il ne porte ni l'un ni l'autre.
+Sur la page GTD, le raccourci n'est pas rendu du tout : son seul contenu utile — le mot « GTD » — est déjà le titre de la page, juste à droite du bouton ☰, et un lien vers la page qu'on est en train de lire n'apporte rien. La coque n'en reçoit pas de classe `active` ni d'`aria-current="page"` : la page courante se lit dans son titre, et le panneau garde son entrée active comme sur ses autres pages. La structure de la rangée change donc d'une page à l'autre, mais uniquement par l'absence d'un contrôle : le titre reste collé à droite de ☰ et ne laisse aucun trou.
 
 Le libellé est le texte visible « GTD », doublé d'une infobulle qui développe le sigle. Le lien est un `<a>` natif : il s'active avec `Entrée`, reçoit un anneau de focus visible, et ne demande aucun JavaScript.
 
@@ -75,7 +75,7 @@ Le libellé est le texte visible « GTD », doublé d'une infobulle qui dévelop
 
 - **Réutiliser l'entrée du panneau comme seul accès** : sur un téléphone, le panneau est souvent replié (état persisté) et l'entrée n'est alors pas visible ; le raccourci doit précisément éviter d'ouvrir le panneau.
 - **Un bouton avec gestionnaire JavaScript** : un lien suffit pour une navigation, et un `<button>` perdrait le clic milieu, « ouvrir dans un nouvel onglet » et l'activation native au clavier.
-- **Masquer le raccourci sur la page GTD** : l'en-tête changerait de structure d'une page à l'autre et le titre se décalerait à gauche ; l'état actif suffit à expliquer la présence du lien sur sa propre page.
+- **Garder le raccourci sur la page GTD avec la classe `active`** : c'est le premier choix, écarté depuis, qui affichait « GTD » deux fois côte à côte dans l'en-tête — un bouton bordé puis le grand titre — sans autre information que celle déjà portée par celui-ci.
 - **Une icône seule** : aucune icône existante ne signifie « GTD » sans ambiguïté ; le texte est plus clair et tient dans l'en-tête, y compris à 390 px.
 
 ### 4. Le raccourci ne change pas l'état du panneau
@@ -86,7 +86,7 @@ Le raccourci est hors du panneau. Le repli automatique après navigation écoute
 
 ### 5. Mise en forme : un bouton compact aligné sur ☰
 
-`.topbar-shortcut` reprend la forme de `.btn` (bordure, fond de carte, rayon) avec un rembourrage plus court et une police plus petite, pour s'aligner sur la hauteur du bouton ☰ sans le dépasser. Il est `flex: 0 0 auto` : un titre long se tronque au lieu de le pousser hors de l'en-tête. L'état `.active` reprend les couleurs de `.sidebar-link.active` (fond `#eef2ff`, texte `--accent-dark`) et l'anneau de focus est le même que celui de `.topbar-add`. Sur un écran étroit, le rembourrage est réduit pour que ☰, le raccourci et le titre tiennent sur une ligne.
+`.topbar-shortcut` reprend la forme de `.btn` (bordure, fond de carte, rayon) avec un rembourrage plus court et une police plus petite, pour s'aligner sur la hauteur du bouton ☰ sans le dépasser. Il est `flex: 0 0 auto` : un titre long se tronque au lieu de le pousser hors de l'en-tête. Aucun état `.active` n'est nécessaire, le raccourci n'étant jamais rendu sur sa propre page ; l'anneau de focus est le même que celui de `.topbar-add`. Sur un écran étroit, le rembourrage est réduit pour que ☰, le raccourci et le titre tiennent sur une ligne.
 
 Aucune règle n'est nécessaire sur `.topbar-sticky` : le sous-titre n'existe pas sur les pages de domaine, et le raccourci est un enfant fixe de la rangée, comme le bouton d'ajout de projet.
 
@@ -98,11 +98,11 @@ Dans les spécifications, l'entrée du panneau est renommée dans `home-dashboar
 
 ### 7. Deux implémentations, un seul contrat DOM
 
-`server.js` et `rust/src/html.rs` rendent le même bloc de titre, le même raccourci avec les mêmes classes, le même ordre et les mêmes attributs (`active`, `aria-current`, `title`). Node reste la référence couverte par Playwright ; Rust porte les mêmes assertions dans ses tests unitaires. Aucun nom de classe n'est propre à une implémentation.
+`server.js` et `rust/src/html.rs` rendent le même bloc de titre, le même raccourci avec les mêmes classes, le même ordre et les mêmes attributs (`title`), et l'omettent tous deux quand la page est la page GTD. Node reste la référence couverte par Playwright ; Rust porte les mêmes assertions dans ses tests unitaires. Aucun nom de classe n'est propre à une implémentation.
 
 ## Risks / Trade-offs
 
-- **« GTD » deux fois dans l'en-tête de la page GTD** (raccourci puis titre) → le raccourci est un bouton bordé, plus petit, avec l'état actif, et le titre est le grand `<h1>` ; la lecture reste hiérarchisée et l'en-tête ne bouge pas d'une page à l'autre.
+- **Le titre se décale à gauche sur la page GTD** (pas de raccourci avant lui) → c'est voulu : la rangée ne commence que par ☰ puis le titre, sans espace vide entre les deux, et le titre reste le plus grand élément de l'en-tête. L'alternative — un raccourci actif doublant le titre — coûtait un contrôle sans information supplémentaire à chaque visite de la page.
 - **Panneau ouvert + raccourci sur un téléphone** → la page GTD arrive avec le panneau ouvert, comme après tout clic sur un lien du contenu ; le bouton ☰ le referme. Aucun état supplémentaire n'est introduit.
 - **Titre de domaine long** → le bloc de titre rétrécit (`min-width: 0`) et le `<h1>` s'ellipse ; le raccourci et le bouton d'ajout de projet restent fixes (`flex: 0 0 auto`), donc rien n'est poussé hors de l'en-tête.
 - **En-tête collant d'une page de domaine** → le bloc de titre n'y porte pas de sous-titre, et la barre de hiérarchie garde `flex: 0 0 100%` ; la hauteur de l'en-tête est inchangée.

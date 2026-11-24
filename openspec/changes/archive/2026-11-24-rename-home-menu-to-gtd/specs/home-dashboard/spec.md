@@ -80,18 +80,23 @@ Le système SHALL afficher « GTD » comme titre de la page servie à la racine,
 - **WHEN** le compte n'a aucun domaine et que l'utilisateur ouvre `/`
 - **THEN** l'en-tête affiche « GTD » et « Getting Things Done » au-dessus de l'état vide invitant à créer un domaine
 
-### Requirement: Atteindre la page GTD depuis l'en-tête de chaque page
+### Requirement: Atteindre la page GTD depuis l'en-tête des autres pages
 
-Le système SHALL afficher dans l'en-tête de chaque page rendue par la coque — la page GTD, une page de domaine, la page Administration et la page Aide — un raccourci « GTD » vers `/`, placé immédiatement à droite du bouton d'affichage/masquage du panneau (☰) et avant le titre de la page. Le raccourci SHALL être un lien dont le texte visible est « GTD », SHALL être activable au clavier, et SHALL rester visible et utilisable quand le panneau latéral est replié. Sur la page GTD, il SHALL porter la classe `active` et `aria-current="page"` ; sur les autres pages, il SHALL ne porter ni l'un ni l'autre. Son activation SHALL charger la page GTD sans modifier l'état du panneau latéral. La page de gestion des passkeys, qui n'a ni en-tête ni bouton menu, n'est pas concernée.
+Le système SHALL afficher dans l'en-tête de chaque page rendue par la coque autre que la page GTD — une page de domaine, la page Administration et la page Aide — un raccourci « GTD » vers `/`, placé immédiatement à droite du bouton d'affichage/masquage du panneau (☰) et avant le titre de la page. La page GTD SHALL NOT afficher ce raccourci : son titre « GTD » occupe déjà cette position et désigne la page courante, de sorte qu'un lien vers elle-même n'y apporterait aucune information. Le raccourci SHALL être un lien dont le texte visible est « GTD », SHALL ne porter ni la classe `active` ni `aria-current="page"`, SHALL être activable au clavier, et SHALL rester visible et utilisable quand le panneau latéral est replié. Son activation SHALL charger la page GTD sans modifier l'état du panneau latéral. La page de gestion des passkeys, qui n'a ni en-tête ni bouton menu, n'est pas concernée.
 
-#### Scenario: Le raccourci est présent sur chaque page de la coque
+#### Scenario: Le raccourci est présent sur les pages de la coque autres que la GTD
 
-- **WHEN** la page GTD, une page de domaine, la page Administration ou la page Aide est rendue
+- **WHEN** une page de domaine, la page Administration ou la page Aide est rendue
 - **THEN** l'en-tête contient un lien « GTD » vers `/`
+
+#### Scenario: La page GTD n'affiche pas de raccourci vers elle-même
+
+- **WHEN** la page GTD est rendue
+- **THEN** son en-tête ne contient aucun lien vers `/` et affiche seulement le bouton ☰ puis le titre « GTD » et son sous-titre
 
 #### Scenario: Le raccourci est à droite du bouton menu
 
-- **WHEN** une page de la coque est rendue
+- **WHEN** une page de la coque autre que la page GTD est rendue
 - **THEN** le raccourci « GTD » suit immédiatement le bouton ☰ dans l'en-tête, avant le titre de la page
 
 #### Scenario: Le raccourci mène à la page GTD
@@ -99,10 +104,10 @@ Le système SHALL afficher dans l'en-tête de chaque page rendue par la coque �
 - **WHEN** l'utilisateur active le raccourci « GTD » depuis la page d'un domaine
 - **THEN** la page GTD est affichée à la racine
 
-#### Scenario: Le raccourci est actif sur la page GTD seulement
+#### Scenario: Le raccourci n'est pas marqué comme la page courante
 
-- **WHEN** la page GTD est affichée
-- **THEN** le raccourci porte la classe `active` et `aria-current="page"` ; sur une page de domaine, la page Administration ou la page Aide, il ne porte ni l'un ni l'autre
+- **WHEN** une page de la coque autre que la page GTD est rendue
+- **THEN** le raccourci ne porte ni la classe `active` ni `aria-current="page"`
 
 #### Scenario: Le raccourci reste visible quand le panneau est replié
 

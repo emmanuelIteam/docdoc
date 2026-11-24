@@ -7,6 +7,13 @@
 			"command": "docker-compose up -d",
 			"isBackground": true,
 			"group": "build"
+		},
+		{
+			"label": "Deepseek Harness",
+			"type": "shell",
+			"command": "npx @deepseek-ai/dsh web",
+			"isBackground": true,
+			"group": "build"
 		}
 	]
 }

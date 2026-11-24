@@ -1516,7 +1516,15 @@ function renderShell(space, content, activeSlug, opts = {}) {
     <div class="content">
       <header class="topbar${opts.ancestry ? ' topbar-sticky' : ''}" id="topbar">
         <button type="button" class="btn sidebar-toggle" id="sidebar-toggle" title="Afficher/masquer le panneau">☰</button>
-        <a class="btn topbar-shortcut${homeActive ? ' active' : ''}" href="/" title="Page GTD — Getting Things Done"${homeActive ? ' aria-current="page"' : ''}>GTD</a>
+        ${
+          // The shortcut points at the page being read when `opts.home` is set,
+          // so it is rendered on the other shell pages only: on the GTD page the
+          // title right next to it already says « GTD », and a link to the page
+          // one is reading would only repeat it.
+          homeActive
+            ? ''
+            : '<a class="btn topbar-shortcut" href="/" title="Page GTD — Getting Things Done">GTD</a>'
+        }
         <div class="topbar-title">
           <h1>${escapeHtml(opts.title || 'Mes projets')}</h1>
           ${subtitle}

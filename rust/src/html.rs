@@ -222,18 +222,15 @@ pub fn render_shell(
     } else {
         ""
     };
-    // The GTD shortcut sits right of the panel toggle, before the title, on
-    // every shell page; it points at the same `/` as the sidebar entry, but
-    // stays reachable while the panel is folded.
-    let shortcut_class = if options.home {
-        "btn topbar-shortcut active"
-    } else {
-        "btn topbar-shortcut"
-    };
-    let shortcut_current = if options.home {
-        " aria-current=\"page\""
-    } else {
+    // The GTD shortcut sits right of the panel toggle, before the title, on the
+    // shell pages other than the GTD page: it points at the same `/` as the
+    // sidebar entry, but stays reachable while the panel is folded. On the GTD
+    // page the title right next to it already says "GTD", so a link to the page
+    // one is reading would only repeat it.
+    let shortcut = if options.home {
         ""
+    } else {
+        "<a class=\"btn topbar-shortcut\" href=\"/\" title=\"Page GTD — Getting Things Done\">GTD</a>"
     };
     // The subtitle belongs to the title block, under the heading. Only the GTD
     // page passes one, so the sticky domain header keeps its single line.
@@ -258,7 +255,7 @@ pub fn render_shell(
     <div class=\"content\">
       <header class=\"{topbar_class}\" id=\"topbar\">
         <button type=\"button\" class=\"btn sidebar-toggle\" id=\"sidebar-toggle\" title=\"Afficher/masquer le panneau\">☰</button>
-        <a class=\"{shortcut_class}\" href=\"/\" title=\"Page GTD — Getting Things Done\"{shortcut_current}>GTD</a>
+        {shortcut}
         <div class=\"topbar-title\">
           <h1>{title}</h1>
           {subtitle}
@@ -280,8 +277,7 @@ pub fn render_shell(
         slug = escape_html(active_slug),
         sidebar = render_sidebar(space, active_slug, options),
         topbar_class = topbar_class,
-        shortcut_class = shortcut_class,
-        shortcut_current = shortcut_current,
+        shortcut = shortcut,
         subtitle = subtitle,
         add_project = add_project,
         ancestry = ancestry,
@@ -1811,7 +1807,7 @@ mod tests {
     }
 
     #[test]
-    fn home_page_has_its_title_subtitle_and_shortcut() {
+    fn home_page_has_its_title_and_subtitle_without_the_shortcut() {
         use crate::space::Space;
         use std::collections::HashMap;
 
@@ -1828,9 +1824,8 @@ mod tests {
         assert!(html.contains("<title>GTD</title>"));
         assert!(html.contains("<h1>GTD</h1>"));
         assert!(html.contains("<p class=\"topbar-subtitle\">Getting Things Done</p>"));
-        assert!(html.contains("class=\"btn topbar-shortcut active\""));
-        assert!(html.contains("aria-current=\"page\""));
-        assert!(html.contains(">GTD</a>"));
+        // The page links to itself nowhere in the header: its own title is enough.
+        assert!(!html.contains("topbar-shortcut"));
         assert!(html.contains("Aucun domaine"));
         assert!(!html.contains("Tableau de bord"));
 
@@ -1846,8 +1841,9 @@ mod tests {
             },
         );
         assert!(admin.contains("class=\"btn topbar-shortcut\""));
-        assert!(!admin.contains("topbar-subtitle"));
+        assert!(admin.contains(">GTD</a>"));
         assert!(!admin.contains("topbar-shortcut active"));
+        assert!(!admin.contains("topbar-subtitle"));
     }
 
     #[test]

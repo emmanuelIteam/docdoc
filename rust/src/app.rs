@@ -2939,8 +2939,8 @@ mod http_tests {
         assert!(home.contains("<title>GTD</title>"));
         assert!(home.contains("<h1>GTD</h1>"));
         assert!(home.contains("<p class=\"topbar-subtitle\">Getting Things Done</p>"));
-        assert!(home.contains("class=\"btn topbar-shortcut active\""));
-        assert!(home.contains(">GTD</a>"));
+        // No header shortcut on its own page: the title next to it says "GTD".
+        assert!(!home.contains("topbar-shortcut"));
         assert!(home.contains("data-gtd=\"in_progress\""));
         assert!(home.contains("data-gtd=\"waiting\""));
         assert!(!home.contains("data-gtd=\"someday\""));

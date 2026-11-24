@@ -126,7 +126,7 @@ Le système SHALL documenter dans la page « Aide » les interactions prises en 
 
 ### Requirement: Present the guide as readable sections
 
-Le système SHALL présenter la documentation de la page « Aide » en sections titrées — au moins la sélection et le menu, le repli, le déplacement, le renommage, l'ajout d'une sous-tâche, les liens de tâche, l'indentation, les étiquettes, les rubriques GTD de l'accueil et l'administration — plutôt qu'en un paragraphe unique. Le contenu SHALL rester lisible sans JavaScript et SHALL ne rien tronquer.
+Le système SHALL présenter la documentation de la page « Aide » en sections titrées — au moins la sélection et le menu, le repli, le déplacement, le renommage, l'ajout d'une sous-tâche, les liens de tâche, l'indentation, les étiquettes, le tableau GTD et ses rubriques, et l'administration — plutôt qu'en un paragraphe unique. Le contenu SHALL rester lisible sans JavaScript et SHALL ne rien tronquer.
 
 #### Scenario: Each topic has its own title
 
@@ -146,7 +146,7 @@ Le système SHALL présenter la documentation de la page « Aide » en sections 
 #### Scenario: The GTD board has its own section
 
 - **WHEN** la page « Aide » est rendue
-- **THEN** les rubriques GTD de la page d'accueil sont documentées dans une section titrée distincte des autres sujets
+- **THEN** le tableau GTD et ses rubriques sont documentés dans une section titrée distincte des autres sujets
 
 ### Requirement: Afficher la version servie en bas de la page Aide
 
@@ -178,7 +178,7 @@ Le système SHALL afficher, à la fin du contenu de la page « Aide » et à l'i
 
 ### Requirement: Document the GTD rubriques of the home page
 
-Le système SHALL documenter dans la page « Aide » les deux sous-états d'« En cours » — « À faire » et « En attente » —, leur signification, le fait qu'ils se gèrent depuis la page d'accueil, le rattachement d'une tâche à l'autre sous-état par glisser-déposer et l'alternative accessible par le menu de rubrique. La documentation SHALL rappeler que le titre d'une carte ouvre la tâche dans son domaine et SHALL indiquer qu'une tâche « En projet » (`todo`) n'est pas listée tant qu'elle n'a pas été passée à « En cours ».
+Le système SHALL documenter dans la page « Aide » les deux sous-états d'« En cours » — « À faire » et « En attente » —, leur signification, le fait qu'ils se gèrent depuis la page GTD, le rattachement d'une tâche à l'autre sous-état par glisser-déposer et l'alternative accessible par le menu de rubrique. La documentation SHALL rappeler que le titre d'une carte ouvre la tâche dans son domaine et SHALL indiquer qu'une tâche « En projet » (`todo`) n'est pas listée tant qu'elle n'a pas été passée à « En cours ».
 
 #### Scenario: The guide explains the two sub-states
 
@@ -188,12 +188,12 @@ Le système SHALL documenter dans la page « Aide » les deux sous-états d'« E
 #### Scenario: The guide explains the En cours grouping
 
 - **WHEN** la page « Aide » est rendue
-- **THEN** elle indique que les rubriques « À faire » et « En attente » de l'accueil sont les deux sous-états d'« En cours »
+- **THEN** elle indique que les rubriques « À faire » et « En attente » de la page GTD sont les deux sous-états d'« En cours »
 
 #### Scenario: The guide no longer names Un jour peut-être
 
 - **WHEN** la page « Aide » est rendue
-- **THEN** elle ne présente plus « Un jour peut-être » comme une rubrique de l'accueil
+- **THEN** elle ne présente plus « Un jour peut-être » comme une rubrique de la page GTD
 
 #### Scenario: The guide explains the drag and drop
 
@@ -213,7 +213,7 @@ Le système SHALL documenter dans la page « Aide » les deux sous-états d'« E
 #### Scenario: The guide explains how a task becomes listed
 
 - **WHEN** la page « Aide » est rendue
-- **THEN** elle indique qu'une tâche « En projet » n'apparaît sur l'accueil qu'une fois passée à « En cours » depuis son domaine
+- **THEN** elle indique qu'une tâche « En projet » n'apparaît sur la page GTD qu'une fois passée à « En cours » depuis son domaine
 
 ### Requirement: Document what the GTD board excludes
 
@@ -232,7 +232,7 @@ Le système SHALL indiquer dans la page « Aide » que seules les tâches feuill
 #### Scenario: The legacy someday value is documented
 
 - **WHEN** la page « Aide » est rendue
-- **THEN** elle indique qu'une tâche « Un jour peut-être » est désormais lue comme « En projet » et n'apparaît pas sur l'accueil
+- **THEN** elle indique qu'une tâche « Un jour peut-être » est désormais lue comme « En projet » et n'apparaît pas sur la page GTD
 
 ### Requirement: Documenter la sauvegarde et la restauration
 
@@ -358,4 +358,28 @@ Le système SHALL documenter dans la page « Aide » le classement manuel des ca
 
 - **WHEN** la page « Aide » est affichée alors que `app.js` ne s'exécute pas
 - **THEN** la section sur l'ordre manuel des tâches reste entièrement affichée
+
+### Requirement: Nommer la page GTD dans la page Aide
+
+Le système SHALL désigner la page servie à la racine sous le nom « page GTD » dans la page « Aide », et SHALL NOT l'appeler « page d'accueil » ni « accueil ». La section consacrée à l'ordonnancement des cartes du tableau SHALL s'intituler « Ordonner les tâches GTD ». Ces mentions SHALL rester entièrement lisibles sans JavaScript.
+
+#### Scenario: The guide names the GTD page
+
+- **WHEN** la page « Aide » est rendue
+- **THEN** elle désigne la page servie à la racine comme « la page GTD »
+
+#### Scenario: The guide no longer says page d'accueil
+
+- **WHEN** la page « Aide » est rendue
+- **THEN** son contenu ne contient plus l'expression « page d'accueil »
+
+#### Scenario: The ordering section is named GTD
+
+- **WHEN** la page « Aide » est rendue
+- **THEN** la section qui documente l'ordre des cartes s'intitule « Ordonner les tâches GTD »
+
+#### Scenario: The renamed section is readable without JavaScript
+
+- **WHEN** la page « Aide » est rendue alors que `app.js` ne s'exécute pas
+- **THEN** la section « Ordonner les tâches GTD » et son texte restent entièrement affichés
 
