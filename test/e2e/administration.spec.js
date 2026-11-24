@@ -222,7 +222,7 @@ test('6.0 la page Aide est accessible depuis le pied du panneau, avant tout doma
   await expect(page.locator('.guide-section h2')).toHaveText([
     "Changer l'état d'une tâche",
     'Classer les tâches par rubrique GTD',
-    "Ordonner les tâches de l'accueil",
+    "Ordonner les tâches GTD",
     'Garder le fil de la hiérarchie',
     'Sélectionner une ligne et ouvrir son menu',
     'Replier ou déplier une ligne',
@@ -238,6 +238,7 @@ test('6.0 la page Aide est accessible depuis le pied du panneau, avant tout doma
     'Sauvegarder et restaurer ses données',
   ]);
   await expect(guide).toContainText('chaîne des tâches mères');
+  await expect(guide).toContainText('une seule carte');
   await expect(guide).toContainText('MAJ+Tab');
   await expect(guide).toContainText('poignée');
   await expect(guide).toContainText('lien nommé');
@@ -248,6 +249,7 @@ test('6.0 la page Aide est accessible depuis le pied du panneau, avant tout doma
   await expect(guide).toContainText("L'ordre est mémorisé");
   await expect(guide).toContainText('En cours');
   await expect(guide).toContainText('En projet');
+  await expect(guide).not.toContainText("page d'accueil");
   await expect(guide).toContainText('ne regroupent plus');
   await expect(guide.locator('a[href="/administration"]')).toHaveCount(2);
 

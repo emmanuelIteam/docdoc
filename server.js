@@ -1470,7 +1470,7 @@ function renderSidebar(space, activeSlug, opts = {}) {
 
   return `<aside class="sidebar" id="sidebar">
       <div class="sidebar-top" id="sidebar-top">
-        <a class="sidebar-link sidebar-home${homeActive ? ' active' : ''}" href="/"${homeActive ? ' aria-current="page"' : ''}>Accueil</a>
+        <a class="sidebar-link sidebar-home${homeActive ? ' active' : ''}" href="/"${homeActive ? ' aria-current="page"' : ''}>GTD</a>
       </div>
       <div class="sidebar-header">Domaines</div>
       <nav class="sidebar-nav" id="sidebar-nav">${renderSidebarNav(space, activeSlug, currentPath)}</nav>
@@ -1495,6 +1495,12 @@ function renderSidebar(space, activeSlug, opts = {}) {
 }
 
 function renderShell(space, content, activeSlug, opts = {}) {
+  const homeActive = Boolean(opts.home);
+  // The page subtitle belongs to the title block, under the heading: the guide
+  // and the board keep a single header line, and only the GTD page passes one.
+  const subtitle = opts.subtitle
+    ? `<p class="topbar-subtitle">${escapeHtml(opts.subtitle)}</p>`
+    : '';
   return `<!doctype html>
 <html lang="fr">
 <head>
@@ -1510,7 +1516,11 @@ function renderShell(space, content, activeSlug, opts = {}) {
     <div class="content">
       <header class="topbar${opts.ancestry ? ' topbar-sticky' : ''}" id="topbar">
         <button type="button" class="btn sidebar-toggle" id="sidebar-toggle" title="Afficher/masquer le panneau">☰</button>
-        <h1>${escapeHtml(opts.title || 'Mes projets')}</h1>
+        <a class="btn topbar-shortcut${homeActive ? ' active' : ''}" href="/" title="Page GTD — Getting Things Done"${homeActive ? ' aria-current="page"' : ''}>GTD</a>
+        <div class="topbar-title">
+          <h1>${escapeHtml(opts.title || 'Mes projets')}</h1>
+          ${subtitle}
+        </div>
         ${
           opts.addProject
             ? '<button type="button" class="btn-mini topbar-add" id="add-project" title="Ajouter un projet" aria-label="Ajouter un projet">+</button>'
@@ -1598,14 +1608,27 @@ function ancestorChain(index, id) {
   return chain;
 }
 
-// The GTD rubrique of a leaf line, or null when the line is not listed on the
+// True when a descendant of `node` — at any depth — is active, i.e. carries one
+// of the two sub-states of "En cours". Such a line is represented by its
+// deepest active line and is not listed itself.
+function hasActiveDescendant(node) {
+  for (const child of node.children || []) {
+    if (child.status === 'in_progress' || child.status === 'waiting') return true;
+    if (hasActiveDescendant(child)) return true;
+  }
+  return false;
+}
+
+// The GTD rubrique of an active line, or null when the line is not listed on the
 // home board. Only the two sub-states of "En cours" are listed: `in_progress`
-// ("À faire") and `waiting` ("En attente"). `todo` ("En projet"), `done`,
-// legacy `someday` (normalized to `todo` on load) and lines with children never
-// appear. The board only reads the in-memory space: a GET must not create the
-// default project of an empty domain nor persist anything.
+// ("À faire") and `waiting` ("En attente"), whether the line is a leaf or a
+// parent. A line whose descendant is active is not listed: the branch is
+// represented by its deepest active line. `todo` ("En projet"), `done`, legacy
+// `someday` (normalized to `todo` on load) and archived domains never appear.
+// The board only reads the in-memory space: a GET must not create the default
+// project of an empty domain nor persist anything.
 function homeRubrique(node) {
-  if (!node || (node.children && node.children.length)) return null;
+  if (!node || hasActiveDescendant(node)) return null;
   if (node.status === 'in_progress' || node.status === 'waiting') {
     return node.status;
   }
@@ -1759,7 +1782,11 @@ function renderHomePage(space) {
       renderHomeBoard(space) +
       '<p id="gtd-announcer" class="sr-only" aria-live="polite"></p>';
   }
-  return renderShell(space, content, null, { title: 'Tableau de bord', home: true });
+  return renderShell(space, content, null, {
+    title: 'GTD',
+    subtitle: 'Getting Things Done',
+    home: true,
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -2021,18 +2048,18 @@ function renderGuidePage(space) {
 
     <section class="guide-section">
       <h2>Changer l'état d'une tâche</h2>
-      <p>Le menu d'une ligne propose trois états : « En projet » pour une tâche non commencée, « En cours » pour une tâche engagée, et « Terminé » pour une tâche achevée. « En cours » se décline en deux sous-états — « À faire » et « En attente » — qui se choisissent depuis la page d'accueil, pas depuis le menu de la ligne. Une tâche « En attente » apparaît donc avec « En cours » actif dans le menu ; la choisir la ramène à « À faire ».</p>
+      <p>Le menu d'une ligne propose trois états : « En projet » pour une tâche non commencée, « En cours » pour une tâche engagée, et « Terminé » pour une tâche achevée. « En cours » se décline en deux sous-états — « À faire » et « En attente » — qui se choisissent depuis la page GTD, pas depuis le menu de la ligne. Une tâche « En attente » apparaît donc avec « En cours » actif dans le menu ; la choisir la ramène à « À faire ».</p>
     </section>
 
     <section class="guide-section">
       <h2>Classer les tâches par rubrique GTD</h2>
-      <p>La page d'accueil, à la racine, présente les deux sous-états d'« En cours » : « À faire » pour les tâches actionnables et « En attente » pour celles qui dépendent d'un tiers. Seules les tâches feuilles « À faire » ou « En attente » y figurent : une tâche « En projet » n'apparaît qu'après avoir été passée à « En cours » depuis son domaine, et les tâches terminées comme les lignes mères ne sont pas listées. Une tâche héritée « Un jour peut-être » est lue comme « En projet » et n'est donc pas listée.</p>
+      <p>La page GTD, à la racine, présente les deux sous-états d'« En cours » : « À faire » pour les tâches actionnables et « En attente » pour celles qui dépendent d'un tiers. Une ligne « À faire » ou « En attente » y figure, qu'elle soit une tâche seule ou une tâche mère : une branche n'a qu'une seule carte, portée par sa ligne active la plus profonde. Une tâche mère dont aucune sous-tâche n'est active apparaît donc comme une autre tâche ; dès qu'une sous-tâche est active, c'est sa carte qui représente la branche et la mère n'a pas de carte propre. Une tâche « En projet » n'apparaît qu'après avoir été passée à « En cours » depuis son domaine, et les tâches terminées ne sont pas listées. Une tâche héritée « Un jour peut-être » est lue comme « En projet » et n'est donc pas listée.</p>
       <p>Glissez une carte d'une rubrique à l'autre, à la souris ou avec la poignée sur un écran tactile. Le menu « Changer de rubrique » de chaque carte fait la même chose au clavier. Cliquez sur le titre d'une carte pour ouvrir la tâche dans son domaine, avec ses tâches mères dépliées et la ligne mise en évidence.</p>
     </section>
 
     <section class="guide-section">
-      <h2>Ordonner les tâches de l'accueil</h2>
-      <p>Dans chaque rubrique de la page d'accueil, glissez une carte au-dessus ou en dessous d'une autre pour la placer à cet endroit, à la souris comme avec la poignée sur un écran tactile. Les flèches ↑ et ↓ de chaque carte la déplacent d'un cran ; elles sont désactivées en première et en dernière position. Un dépôt dans l'autre rubrique place la carte à l'endroit déposé, tandis que le menu « Changer de rubrique » la place en fin de liste. L'ordre est mémorisé pour votre compte et conservé d'une visite à l'autre ; une nouvelle tâche rejoint la fin de sa rubrique.</p>
+      <h2>Ordonner les tâches GTD</h2>
+      <p>Dans chaque rubrique de la page GTD, glissez une carte au-dessus ou en dessous d'une autre pour la placer à cet endroit, à la souris comme avec la poignée sur un écran tactile. Les flèches ↑ et ↓ de chaque carte la déplacent d'un cran ; elles sont désactivées en première et en dernière position. Un dépôt dans l'autre rubrique place la carte à l'endroit déposé, tandis que le menu « Changer de rubrique » la place en fin de liste. L'ordre est mémorisé pour votre compte et conservé d'une visite à l'autre ; une nouvelle tâche rejoint la fin de sa rubrique.</p>
     </section>
 
     <section class="guide-section">
@@ -2094,7 +2121,7 @@ function renderGuidePage(space) {
 
     <section class="guide-section">
       <h2>Classer les domaines</h2>
-      <p>Chaque domaine du panneau porte deux flèches ↑ et ↓ : elles le déplacent d'un cran dans la liste. Cet ordre est le même que celui de la page Administration et que celui des tâches en cours sur la page d'accueil.</p>
+      <p>Chaque domaine du panneau porte deux flèches ↑ et ↓ : elles le déplacent d'un cran dans la liste. Cet ordre est le même que celui de la page Administration et que celui des tâches en cours sur la page GTD.</p>
       <p>Les thèmes restent des étiquettes : ils ne regroupent plus les domaines du panneau.</p>
     </section>
 

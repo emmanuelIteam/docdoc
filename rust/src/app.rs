@@ -2936,12 +2936,24 @@ mod http_tests {
 
         let (status, _, home) = call(&app, "GET", "/", Some(&cookie), None, "").await;
         assert_eq!(status, StatusCode::OK);
-        assert!(home.contains("Tableau de bord"));
+        assert!(home.contains("<title>GTD</title>"));
+        assert!(home.contains("<h1>GTD</h1>"));
+        assert!(home.contains("<p class=\"topbar-subtitle\">Getting Things Done</p>"));
+        assert!(home.contains("class=\"btn topbar-shortcut active\""));
+        assert!(home.contains(">GTD</a>"));
         assert!(home.contains("data-gtd=\"in_progress\""));
         assert!(home.contains("data-gtd=\"waiting\""));
         assert!(!home.contains("data-gtd=\"someday\""));
         assert!(home.contains("class=\"gtd-group-title\">En cours</h2>"));
         assert!(home.contains(&format!("id=\"gtd-node-{node_id}\"")));
+
+        // The shortcut is on the domain page too, but the subtitle stays on `/`.
+        let (status, _, domain_page) =
+            call(&app, "GET", "/domaine/maison", Some(&cookie), None, "").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(domain_page.contains("class=\"btn topbar-shortcut\""));
+        assert!(!domain_page.contains("topbar-subtitle"));
+        assert!(!domain_page.contains("topbar-shortcut active"));
     }
 
     fn board_section<'a>(html: &'a str, rubrique: &str) -> &'a str {
@@ -3102,6 +3114,117 @@ mod http_tests {
             tree[1]["status"], "in_progress",
             "le second nœud n'a pas bougé"
         );
+    }
+
+    #[tokio::test]
+    async fn home_order_route_accepts_a_listed_mother_and_refuses_a_covered_one() {
+        let state = test_state();
+        let cookie = signed_in_cookie(&state).await;
+        let app = build_router(state);
+
+        call(
+            &app,
+            "POST",
+            "/api/domains",
+            Some(&cookie),
+            Some("application/x-www-form-urlencoded"),
+            "name=Maison",
+        )
+        .await;
+        let (_, _, page) = call(&app, "GET", "/domaine/maison", Some(&cookie), None, "").await;
+        let mother = value_of(&page, "id=\"node-").to_string();
+        let (status, headers, _) = call(
+            &app,
+            "POST",
+            "/domaine/maison/api/nodes",
+            Some(&cookie),
+            Some("application/json"),
+            &format!("{{\"parentId\":\"{mother}\"}}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let child = headers
+            .get("x-new-node-id")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let (status, _, _) = call(
+            &app,
+            "POST",
+            &format!("/domaine/maison/api/nodes/{mother}/status"),
+            Some(&cookie),
+            Some("application/json"),
+            "{\"status\":\"in_progress\",\"scope\":\"head\"}",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // The child is still "En projet", so the active mother is the deepest
+        // active line of its branch: it is listed and can be positioned.
+        let (_, _, home) = call(&app, "GET", "/", Some(&cookie), None, "").await;
+        assert!(home.contains(&format!("id=\"gtd-node-{mother}\"")));
+        assert!(!home.contains(&format!("id=\"gtd-node-{child}\"")));
+        let (status, _, board) = call(
+            &app,
+            "POST",
+            "/api/home/order",
+            Some(&cookie),
+            Some("application/json"),
+            &format!("{{\"domain\":\"maison\",\"node\":\"{mother}\",\"rubrique\":\"in_progress\",\"index\":0}}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(board.contains(&format!("id=\"gtd-node-{mother}\"")));
+
+        // Once the child is active, the mother is represented by it: the mother
+        // is refused, the child is accepted.
+        let (status, _, _) = call(
+            &app,
+            "POST",
+            &format!("/domaine/maison/api/nodes/{child}/status"),
+            Some(&cookie),
+            Some("application/json"),
+            "{\"status\":\"in_progress\",\"scope\":\"head\"}",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _, _) = call(
+            &app,
+            "POST",
+            "/api/home/order",
+            Some(&cookie),
+            Some("application/json"),
+            &format!("{{\"domain\":\"maison\",\"node\":\"{mother}\",\"rubrique\":\"in_progress\",\"index\":0}}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _, board) = call(
+            &app,
+            "POST",
+            "/api/home/order",
+            Some(&cookie),
+            Some("application/json"),
+            &format!("{{\"domain\":\"maison\",\"node\":\"{child}\",\"rubrique\":\"in_progress\",\"index\":0}}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(board.contains(&format!("id=\"gtd-node-{child}\"")));
+        assert!(!board.contains(&format!("id=\"gtd-node-{mother}\"")));
+
+        // The refused placement changed no status: the mother is still active.
+        let (_, _, outline) = call(
+            &app,
+            "GET",
+            "/domaine/maison/api/outline",
+            Some(&cookie),
+            None,
+            "",
+        )
+        .await;
+        let tree: Value = serde_json::from_str(&outline).unwrap();
+        assert_eq!(tree[0]["status"], "in_progress");
+        assert_eq!(tree[0]["children"][0]["status"], "in_progress");
     }
 
     #[tokio::test]

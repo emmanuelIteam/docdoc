@@ -179,6 +179,9 @@ pub fn installability_head() -> String {
 #[derive(Default)]
 pub struct ShellOptions {
     pub title: Option<String>,
+    /// Page subtitle, rendered under the `<h1>` in the title block. Only the GTD
+    /// page provides one; the other pages leave the header on a single line.
+    pub subtitle: Option<String>,
     pub home: bool,
     pub admin: bool,
     pub help: bool,
@@ -219,6 +222,25 @@ pub fn render_shell(
     } else {
         ""
     };
+    // The GTD shortcut sits right of the panel toggle, before the title, on
+    // every shell page; it points at the same `/` as the sidebar entry, but
+    // stays reachable while the panel is folded.
+    let shortcut_class = if options.home {
+        "btn topbar-shortcut active"
+    } else {
+        "btn topbar-shortcut"
+    };
+    let shortcut_current = if options.home {
+        " aria-current=\"page\""
+    } else {
+        ""
+    };
+    // The subtitle belongs to the title block, under the heading. Only the GTD
+    // page passes one, so the sticky domain header keeps its single line.
+    let subtitle = match options.subtitle.as_deref() {
+        Some(text) => format!("<p class=\"topbar-subtitle\">{}</p>", escape_html(text)),
+        None => String::new(),
+    };
 
     format!(
         "<!doctype html>
@@ -236,7 +258,11 @@ pub fn render_shell(
     <div class=\"content\">
       <header class=\"{topbar_class}\" id=\"topbar\">
         <button type=\"button\" class=\"btn sidebar-toggle\" id=\"sidebar-toggle\" title=\"Afficher/masquer le panneau\">☰</button>
-        <h1>{title}</h1>
+        <a class=\"{shortcut_class}\" href=\"/\" title=\"Page GTD — Getting Things Done\"{shortcut_current}>GTD</a>
+        <div class=\"topbar-title\">
+          <h1>{title}</h1>
+          {subtitle}
+        </div>
         {add_project}
         {ancestry}
       </header>
@@ -254,6 +280,9 @@ pub fn render_shell(
         slug = escape_html(active_slug),
         sidebar = render_sidebar(space, active_slug, options),
         topbar_class = topbar_class,
+        shortcut_class = shortcut_class,
+        shortcut_current = shortcut_current,
+        subtitle = subtitle,
         add_project = add_project,
         ancestry = ancestry,
         content = content
@@ -312,7 +341,7 @@ pub fn render_sidebar(space: &Space, active_slug: &str, options: &ShellOptions) 
     format!(
         "<aside class=\"sidebar\" id=\"sidebar\">
       <div class=\"sidebar-top\" id=\"sidebar-top\">
-        <a class=\"{home_class}\" href=\"/\"{home_current}>Accueil</a>
+        <a class=\"{home_class}\" href=\"/\"{home_current}>GTD</a>
       </div>
       <div class=\"sidebar-header\">Domaines</div>
       <nav class=\"sidebar-nav\" id=\"sidebar-nav\">{nav}</nav>
@@ -628,12 +657,23 @@ pub fn render_page(
 // labels come from `rubrique_label`, so the board and the help text cannot drift.
 const GTD_RUBRIQUES: [&str; 2] = ["in_progress", "waiting"];
 
-// The rubrique of a leaf line, or None when the line is not listed on the home
-// board. Only the two sub-states of "En cours" are listed: `in_progress`
-// ("À faire") and `waiting` ("En attente"). `todo` ("En projet"), `done`, legacy
-// `someday` (normalized to `todo`) and lines with children never appear.
+// True when a descendant of `node`, at any depth, carries one of the two
+// sub-states of "En cours". Such a line is represented by its deepest active
+// line and is not listed itself.
+fn has_active_descendant(node: &crate::model::Node) -> bool {
+    node.children.iter().any(|child| {
+        child.status == "in_progress" || child.status == "waiting" || has_active_descendant(child)
+    })
+}
+
+// The rubrique of an active line, or None when the line is not listed on the
+// home board. Only the two sub-states of "En cours" are listed: `in_progress`
+// ("À faire") and `waiting` ("En attente"), whether the line is a leaf or a
+// parent. A line with an active descendant is not listed: the branch is
+// represented by its deepest active line. `todo` ("En projet"), `done`, legacy
+// `someday` (normalized to `todo`) and archived domains never appear.
 pub(crate) fn home_rubrique(node: &crate::model::Node) -> Option<&'static str> {
-    if !node.children.is_empty() {
+    if has_active_descendant(node) {
         return None;
     }
     match node.status.as_str() {
@@ -869,7 +909,8 @@ pub fn render_home_page(space: &Space) -> String {
         &content,
         None,
         &ShellOptions {
-            title: Some("Tableau de bord".to_string()),
+            title: Some("GTD".to_string()),
+            subtitle: Some("Getting Things Done".to_string()),
             home: true,
             ..Default::default()
         },
@@ -1235,18 +1276,18 @@ pub fn render_guide_page(space: &Space, app_version: &str) -> String {
 
     <section class=\"guide-section\">
       <h2>Changer l'état d'une tâche</h2>
-      <p>Le menu d'une ligne propose trois états : « En projet » pour une tâche non commencée, « En cours » pour une tâche engagée, et « Terminé » pour une tâche achevée. « En cours » se décline en deux sous-états — « À faire » et « En attente » — qui se choisissent depuis la page d'accueil, pas depuis le menu de la ligne. Une tâche « En attente » apparaît donc avec « En cours » actif dans le menu ; la choisir la ramène à « À faire ».</p>
+      <p>Le menu d'une ligne propose trois états : « En projet » pour une tâche non commencée, « En cours » pour une tâche engagée, et « Terminé » pour une tâche achevée. « En cours » se décline en deux sous-états — « À faire » et « En attente » — qui se choisissent depuis la page GTD, pas depuis le menu de la ligne. Une tâche « En attente » apparaît donc avec « En cours » actif dans le menu ; la choisir la ramène à « À faire ».</p>
     </section>
 
     <section class=\"guide-section\">
       <h2>Classer les tâches par rubrique GTD</h2>
-      <p>La page d'accueil, à la racine, présente les deux sous-états d'« En cours » : « À faire » pour les tâches actionnables et « En attente » pour celles qui dépendent d'un tiers. Seules les tâches feuilles « À faire » ou « En attente » y figurent : une tâche « En projet » n'apparaît qu'après avoir été passée à « En cours » depuis son domaine, et les tâches terminées comme les lignes mères ne sont pas listées. Une tâche héritée « Un jour peut-être » est lue comme « En projet » et n'est donc pas listée.</p>
+      <p>La page GTD, à la racine, présente les deux sous-états d'« En cours » : « À faire » pour les tâches actionnables et « En attente » pour celles qui dépendent d'un tiers. Une ligne « À faire » ou « En attente » y figure, qu'elle soit une tâche seule ou une tâche mère : une branche n'a qu'une seule carte, portée par sa ligne active la plus profonde. Une tâche mère dont aucune sous-tâche n'est active apparaît donc comme une autre tâche ; dès qu'une sous-tâche est active, c'est sa carte qui représente la branche et la mère n'a pas de carte propre. Une tâche « En projet » n'apparaît qu'après avoir été passée à « En cours » depuis son domaine, et les tâches terminées ne sont pas listées. Une tâche héritée « Un jour peut-être » est lue comme « En projet » et n'est donc pas listée.</p>
       <p>Glissez une carte d'une rubrique à l'autre, à la souris ou avec la poignée sur un écran tactile. Le menu « Changer de rubrique » de chaque carte fait la même chose au clavier. Cliquez sur le titre d'une carte pour ouvrir la tâche dans son domaine, avec ses tâches mères dépliées et la ligne mise en évidence.</p>
     </section>
 
     <section class=\"guide-section\">
-      <h2>Ordonner les tâches de l'accueil</h2>
-      <p>Dans chaque rubrique de la page d'accueil, glissez une carte au-dessus ou en dessous d'une autre pour la placer à cet endroit, à la souris comme avec la poignée sur un écran tactile. Les flèches ↑ et ↓ de chaque carte la déplacent d'un cran ; elles sont désactivées en première et en dernière position. Un dépôt dans l'autre rubrique place la carte à l'endroit déposé, tandis que le menu « Changer de rubrique » la place en fin de liste. L'ordre est mémorisé pour votre compte et conservé d'une visite à l'autre ; une nouvelle tâche rejoint la fin de sa rubrique.</p>
+      <h2>Ordonner les tâches GTD</h2>
+      <p>Dans chaque rubrique de la page GTD, glissez une carte au-dessus ou en dessous d'une autre pour la placer à cet endroit, à la souris comme avec la poignée sur un écran tactile. Les flèches ↑ et ↓ de chaque carte la déplacent d'un cran ; elles sont désactivées en première et en dernière position. Un dépôt dans l'autre rubrique place la carte à l'endroit déposé, tandis que le menu « Changer de rubrique » la place en fin de liste. L'ordre est mémorisé pour votre compte et conservé d'une visite à l'autre ; une nouvelle tâche rejoint la fin de sa rubrique.</p>
     </section>
 
     <section class=\"guide-section\">
@@ -1308,7 +1349,7 @@ pub fn render_guide_page(space: &Space, app_version: &str) -> String {
 
     <section class=\"guide-section\">
       <h2>Classer les domaines</h2>
-      <p>Chaque domaine du panneau porte deux flèches ↑ et ↓ : elles le déplacent d'un cran dans la liste. Cet ordre est le même que celui de la page Administration et que celui des tâches en cours sur la page d'accueil.</p>
+      <p>Chaque domaine du panneau porte deux flèches ↑ et ↓ : elles le déplacent d'un cran dans la liste. Cet ordre est le même que celui de la page Administration et que celui des tâches en cours sur la page GTD.</p>
       <p>Les thèmes restent des étiquettes : ils ne regroupent plus les domaines du panneau.</p>
     </section>
 
@@ -1630,7 +1671,7 @@ mod tests {
     }
 
     #[test]
-    fn home_board_groups_leaves_and_skips_parents_and_done() {
+    fn home_board_lists_active_lines_without_active_descendant() {
         use crate::model::{Domain, DomainSummary, Node};
         use crate::space::Space;
         use std::collections::HashMap;
@@ -1658,6 +1699,21 @@ mod tests {
             node("a3", "Tâche un jour", "someday", Vec::new()),
             node("a4", "Tâche terminée", "done", Vec::new()),
             node("a6", "Tâche en cours 2", "in_progress", Vec::new()),
+            node(
+                "a7",
+                "Tâche mère active",
+                "in_progress",
+                vec![
+                    node("a7-1", "Sous-tâche en projet", "todo", Vec::new()),
+                    node("a7-2", "Sous-tâche terminée", "done", Vec::new()),
+                ],
+            ),
+            node(
+                "a8",
+                "Tâche mère en attente",
+                "waiting",
+                vec![node("a8-1", "Sous-tâche en attente", "waiting", Vec::new())],
+            ),
         ];
         let domain = Domain {
             id: "d1".to_string(),
@@ -1674,6 +1730,11 @@ mod tests {
                 "a3".to_string(),
                 "a4".to_string(),
                 "a6".to_string(),
+                "a7".to_string(),
+                "a7-1".to_string(),
+                "a7-2".to_string(),
+                "a8".to_string(),
+                "a8-1".to_string(),
             ],
         };
         let summary = DomainSummary {
@@ -1700,13 +1761,22 @@ mod tests {
         assert!(html.contains("data-gtd=\"in_progress\""));
         assert!(html.contains("data-gtd=\"waiting\""));
         assert!(!html.contains("data-gtd=\"someday\""));
-        assert!(html.contains("id=\"gtd-node-a1-1\""));
-        assert!(html.contains("id=\"gtd-node-a2\""));
-        assert!(!html.contains("id=\"gtd-node-a3\""));
-        assert!(html.contains("id=\"gtd-node-a6\""));
-        // The parent, the done line, the todo line and the legacy someday line
-        // never become cards.
+        // An active line with an active descendant is represented by that
+        // descendant only.
         assert!(!html.contains("id=\"gtd-node-a1\""));
+        assert!(html.contains("id=\"gtd-node-a1-1\""));
+        // An active mother whose descendants are not active is a card, like a
+        // leaf.
+        assert!(html.contains("id=\"gtd-node-a7\""));
+        assert!(!html.contains("id=\"gtd-node-a7-1\""));
+        assert!(!html.contains("id=\"gtd-node-a7-2\""));
+        // A waiting mother with a waiting child keeps one card, the child's.
+        assert!(!html.contains("id=\"gtd-node-a8\""));
+        assert!(html.contains("id=\"gtd-node-a8-1\""));
+        assert!(html.contains("id=\"gtd-node-a2\""));
+        // The done line, the todo line and the legacy someday line never become
+        // cards.
+        assert!(!html.contains("id=\"gtd-node-a3\""));
         assert!(!html.contains("id=\"gtd-node-a4\""));
         assert!(!html.contains("id=\"gtd-node-a5\""));
         // The removed badge is no longer rendered.
@@ -1714,12 +1784,70 @@ mod tests {
         // The title is escaped and the rubrique menu is present.
         assert!(html.contains("Tâche en attente &lt;b&gt;"));
         assert!(html.contains("gtd-move-menu"));
-        // The two in-progress leaves keep the outline order.
+        // The in-progress cards keep the outline order.
         let first = html.find("Tâche en cours 1").unwrap();
         let second = html.find("Tâche en cours 2").unwrap();
-        assert!(first < second);
-        // Counts are rendered per rubrique.
+        let mother = html.find("id=\"gtd-node-a7\"").unwrap();
+        assert!(first < second && second < mother);
+        // Counts are rendered per rubrique: a1-1, a6 and a7 on one side, a2 and
+        // a8-1 on the other.
+        assert!(html.contains("<span class=\"gtd-count\">3</span>"));
         assert!(html.contains("<span class=\"gtd-count\">2</span>"));
+
+        // A mother card keeps the deep link and its own ancestry: without
+        // parents, its second line carries the domain alone.
+        let start = html.find("id=\"gtd-node-a7\"").unwrap();
+        let end = html[start..].find("</li>").unwrap() + start;
+        let mother_card = &html[start..end];
+        assert!(mother_card.contains("href=\"/domaine/maison?reveal=a7#node-a7\""));
+        assert!(!mother_card.contains("home-task-parent"));
+        // The child card of another branch recalls its waiting mother.
+        let start = html.find("id=\"gtd-node-a8-1\"").unwrap();
+        let end = html[start..].find("</li>").unwrap() + start;
+        let child_card = &html[start..end];
+        assert!(
+            child_card.contains("<span class=\"home-task-parent\">Tâche mère en attente</span>")
+        );
+    }
+
+    #[test]
+    fn home_page_has_its_title_subtitle_and_shortcut() {
+        use crate::space::Space;
+        use std::collections::HashMap;
+
+        let space = Space {
+            user_id: "u".to_string(),
+            email: "u@example.test".to_string(),
+            domains: HashMap::new(),
+            domain_list: Vec::new(),
+            themes: Vec::new(),
+            home_order: Default::default(),
+        };
+
+        let html = render_home_page(&space);
+        assert!(html.contains("<title>GTD</title>"));
+        assert!(html.contains("<h1>GTD</h1>"));
+        assert!(html.contains("<p class=\"topbar-subtitle\">Getting Things Done</p>"));
+        assert!(html.contains("class=\"btn topbar-shortcut active\""));
+        assert!(html.contains("aria-current=\"page\""));
+        assert!(html.contains(">GTD</a>"));
+        assert!(html.contains("Aucun domaine"));
+        assert!(!html.contains("Tableau de bord"));
+
+        // A non-home shell page keeps the shortcut but never the subtitle.
+        let admin = render_shell(
+            &space,
+            "",
+            None,
+            &ShellOptions {
+                title: Some("Administration".to_string()),
+                admin: true,
+                ..Default::default()
+            },
+        );
+        assert!(admin.contains("class=\"btn topbar-shortcut\""));
+        assert!(!admin.contains("topbar-subtitle"));
+        assert!(!admin.contains("topbar-shortcut active"));
     }
 
     #[test]

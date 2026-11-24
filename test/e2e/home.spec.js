@@ -321,11 +321,11 @@ test.afterAll(async () => {
 /* 1.1 The two rubriques and their contents                            */
 /* ------------------------------------------------------------------ */
 
-test('1.1 l’accueil présente les deux sous-états d’« En cours » et ne classe que les feuilles actives', async ({ browser }) => {
+test('1.1 l’accueil présente les deux sous-états d’« En cours » et ne classe que les lignes actives sans descendant actif', async ({ browser }) => {
   const { context, page } = await signedInPage(browser, stateA);
 
   await page.goto('/');
-  await expect(page.locator('.topbar h1')).toHaveText('Tableau de bord');
+  await expect(page.locator('.topbar h1')).toHaveText('GTD');
   await expect(page.locator('.gtd-column')).toHaveCount(2);
   await expect(page.locator('.gtd-group-title')).toHaveText('En cours');
   await expect(col(page, 'in_progress').locator('h3')).toContainText('À faire');
@@ -465,13 +465,13 @@ test('1.3 un titre de carte est activable au clavier', async ({ browser }) => {
 /* 1.4 The sidebar entry                                               */
 /* ------------------------------------------------------------------ */
 
-test("1.4 l'entrée Accueil du panneau mène à la racine et n'est active que là", async ({ browser }) => {
+test("1.4 l'entrée GTD du panneau mène à la racine et n'est active que là", async ({ browser }) => {
   const { context, page } = await signedInPage(browser, stateA);
 
   await page.goto('/domaine/domaine-a');
   const home = page.locator('a.sidebar-home');
   await expect(home).toHaveCount(1);
-  await expect(home).toHaveText('Accueil');
+  await expect(home).toHaveText('GTD');
   await expect(home).toHaveAttribute('href', '/');
   await expect(page.locator('.sidebar-extra a.sidebar-home')).toHaveCount(0);
   const placement = await page.evaluate(() => {
@@ -503,6 +503,134 @@ test("1.4 l'entrée Accueil du panneau mène à la racine et n'est active que l�
 });
 
 /* ------------------------------------------------------------------ */
+/* 1.4b The GTD page title and subtitle                                */
+/* ------------------------------------------------------------------ */
+
+test('1.4b la page GTD porte le titre « GTD » et le sous-titre « Getting Things Done »', async ({ browser }) => {
+  const { context, page } = await signedInPage(browser, stateA);
+
+  await page.goto('/');
+  await expect(page.locator('.topbar h1')).toHaveText('GTD');
+  await expect(page).toHaveTitle('GTD');
+  await expect(page.locator('.topbar-title .topbar-subtitle')).toHaveText('Getting Things Done');
+
+  // The subtitle belongs to the title block and sits below the title line.
+  const layout = await page.evaluate(() => {
+    const block = document.querySelector('.topbar-title');
+    const title = block.querySelector('h1');
+    const subtitle = block.querySelector('.topbar-subtitle');
+    const titleBox = title.getBoundingClientRect();
+    const subtitleBox = subtitle.getBoundingClientRect();
+    return {
+      follows: Boolean(
+        title.compareDocumentPosition(subtitle) & Node.DOCUMENT_POSITION_FOLLOWING
+      ),
+      below: subtitleBox.top >= titleBox.bottom - 1,
+    };
+  });
+  expect(layout).toEqual({ follows: true, below: true });
+
+  await context.close();
+});
+
+/* ------------------------------------------------------------------ */
+/* 1.4c The subtitle stays on the GTD page                             */
+/* ------------------------------------------------------------------ */
+
+test('1.4c le sous-titre ne quitte pas la page GTD, même sans domaine', async ({ browser }) => {
+  // Account A: the other pages of the shell have no subtitle.
+  const a = await signedInPage(browser, stateA);
+  for (const pagePath of ['/domaine/domaine-a', '/administration', '/aide']) {
+    await a.page.goto(pagePath);
+    await expect(a.page.locator('.topbar-subtitle')).toHaveCount(0);
+  }
+  await a.context.close();
+
+  // Account B: the empty GTD page keeps its title and subtitle.
+  const b = await signedInPage(browser, stateB);
+  await b.page.goto('/');
+  await expect(b.page.locator('.topbar h1')).toHaveText('GTD');
+  await expect(b.page.locator('.topbar-subtitle')).toHaveText('Getting Things Done');
+  await expect(b.page.locator('.empty-state h2')).toHaveText('Aucun domaine');
+  await b.context.close();
+});
+
+/* ------------------------------------------------------------------ */
+/* 1.4d The GTD shortcut in the header                                 */
+/* ------------------------------------------------------------------ */
+
+test('1.4d le raccourci GTD est dans l’en-tête de chaque page et n’est actif que sur /', async ({ browser }) => {
+  const { context, page } = await signedInPage(browser, stateA);
+
+  for (const pagePath of ['/', '/domaine/domaine-a', '/administration', '/aide']) {
+    await page.goto(pagePath);
+    const shortcut = page.locator('.topbar-shortcut');
+    await expect(shortcut).toHaveCount(1);
+    await expect(shortcut).toHaveText('GTD');
+    await expect(shortcut).toHaveAttribute('href', '/');
+    await expect(shortcut).toHaveAttribute('title', 'Page GTD — Getting Things Done');
+
+    // Immediately right of the panel toggle, before the title.
+    const followsToggle = await page.evaluate(() => {
+      const toggle = document.getElementById('sidebar-toggle');
+      const next = toggle && toggle.nextElementSibling;
+      return Boolean(next && next.classList.contains('topbar-shortcut'));
+    });
+    expect(followsToggle).toBe(true);
+
+    if (pagePath === '/') {
+      await expect(shortcut).toHaveClass(/active/);
+      await expect(shortcut).toHaveAttribute('aria-current', 'page');
+    } else {
+      await expect(shortcut).not.toHaveClass(/active/);
+      await expect(shortcut).not.toHaveAttribute('aria-current', 'page');
+    }
+  }
+
+  // From a domain page, the shortcut opens the GTD page at the root.
+  await page.goto('/domaine/domaine-a');
+  await page.locator('.topbar-shortcut').click();
+  await expect(page).toHaveURL(/\/(\?.*)?$/);
+  await expect(page.locator('.topbar h1')).toHaveText('GTD');
+
+  await context.close();
+});
+
+/* ------------------------------------------------------------------ */
+/* 1.4e The GTD shortcut: keyboard, folded panel, panel state          */
+/* ------------------------------------------------------------------ */
+
+test('1.4e le raccourci GTD s’active au clavier, reste visible panneau replié et ne change pas l’état du panneau', async ({ browser }) => {
+  const { context, page } = await signedInPage(browser, stateA);
+
+  // Keyboard: the shortcut is a native link, so Enter follows it.
+  await page.goto('/domaine/domaine-a');
+  await page.locator('.topbar-shortcut').focus();
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/\/(\?.*)?$/);
+
+  // Narrow screen: the shortcut is still visible once the panel is folded.
+  await page.setViewportSize({ width: 390, height: 800 });
+  await page.goto('/domaine/domaine-a');
+  const collapsed = await page
+    .locator('body')
+    .evaluate((el) => el.classList.contains('sidebar-collapsed'));
+  if (!collapsed) await page.click('#sidebar-toggle');
+  await expect(page.locator('#sidebar')).toHaveCSS('width', '0px');
+  await expect(page.locator('.topbar-shortcut')).toBeVisible();
+
+  // The shortcut is outside the panel, so it does not ask for it to fold.
+  await page.click('#sidebar-toggle');
+  await expect(page.locator('#sidebar')).toHaveCSS('width', '240px');
+  await page.locator('.topbar-shortcut').click();
+  await expect(page).toHaveURL(/\/(\?.*)?$/);
+  await expect(page.locator('body')).not.toHaveClass(/sidebar-collapsed/);
+  expect(await page.evaluate(() => localStorage.getItem('sidebarCollapsed'))).toBe('');
+
+  await context.close();
+});
+
+/* ------------------------------------------------------------------ */
 /* 1.5 Empty states (account B)                                        */
 /* ------------------------------------------------------------------ */
 
@@ -511,7 +639,7 @@ test('1.5 les états vides : aucun domaine, puis deux rubriques dès qu’un dom
 
   // No domain yet: the root stays the homepage and points at Administration.
   await page.goto('/');
-  await expect(page.locator('.topbar h1')).toHaveText('Tableau de bord');
+  await expect(page.locator('.topbar h1')).toHaveText('GTD');
   await expect(page.locator('.empty-state h2')).toHaveText('Aucun domaine');
   await expect(page.locator('.empty-state a[href="/administration"]')).toHaveCount(1);
   await expect(page.locator('.gtd-column')).toHaveCount(0);
@@ -576,10 +704,10 @@ test('1.6 en 390 px la carte revient à la ligne sans troncature ni débordement
 });
 
 /* ------------------------------------------------------------------ */
-/* 1.7 Only parent / done lines are absent from the board              */
+/* 1.7 An active mother without active descendant is a card            */
 /* ------------------------------------------------------------------ */
 
-test("1.7 une mère en cours et son enfant terminé ne sont pas listés", async ({ browser }) => {
+test("1.7 une mère en cours sans sous-tâche active est listée, ses enfants non", async ({ browser }) => {
   const { context, page } = await signedInPage(browser, stateB);
 
   await page.goto('/administration');
@@ -594,11 +722,15 @@ test("1.7 une mère en cours et son enfant terminé ne sont pas listés", async 
   await page.goto(href);
   const outline = await (await page.request.get(`/domaine/${slug}/api/outline`)).json();
   const parentId = outline[0].id;
-  const child = await page.request.post(`/domaine/${slug}/api/nodes`, { form: { parentId } });
-  expect(child.ok()).toBeTruthy();
-  const childOutline = await (await page.request.get(`/domaine/${slug}/api/outline`)).json();
-  const childId = findNode(childOutline, parentId).children[0].id;
-  await page.request.post(`/domaine/${slug}/api/nodes/${childId}/status`, {
+  for (const _ of [1, 2]) {
+    const created = await page.request.post(`/domaine/${slug}/api/nodes`, { form: { parentId } });
+    expect(created.ok()).toBeTruthy();
+  }
+  const childrenOutline = await (await page.request.get(`/domaine/${slug}/api/outline`)).json();
+  const children = findNode(childrenOutline, parentId).children;
+  const doneChildId = children[0].id;
+  const todoChildId = children[1].id;
+  await page.request.post(`/domaine/${slug}/api/nodes/${doneChildId}/status`, {
     form: { status: 'done', scope: 'head' },
   });
   await page.request.post(`/domaine/${slug}/api/nodes/${parentId}/status`, {
@@ -606,8 +738,90 @@ test("1.7 une mère en cours et son enfant terminé ne sont pas listés", async 
   });
 
   await page.goto('/');
-  await expect(page.locator(`#gtd-node-${parentId}`)).toHaveCount(0);
-  await expect(page.locator(`#gtd-node-${childId}`)).toHaveCount(0);
+  const card = cardIn(page, 'in_progress', parentId);
+  await expect(card).toHaveCount(1);
+  await expect(card.locator('.gtd-card-title')).toHaveAttribute(
+    'href',
+    `/domaine/${slug}?reveal=${parentId}#node-${parentId}`
+  );
+  // A mother without ancestors shows only its domain on the second line.
+  await expect(card.locator('.home-task-domain')).toHaveText('Parents seulement');
+  await expect(card.locator('.home-task-parent')).toHaveCount(0);
+  // The done and todo children are not cards; only the mother represents the
+  // branch.
+  await expect(page.locator(`#gtd-node-${doneChildId}`)).toHaveCount(0);
+  await expect(page.locator(`#gtd-node-${todoChildId}`)).toHaveCount(0);
+
+  // A listed mother is a card like any other: it can change rubrique, which
+  // writes its status and keeps its descendants untouched.
+  await card.locator('.gtd-grip').dragTo(col(page, 'waiting'));
+  await expect(cardIn(page, 'waiting', parentId)).toHaveCount(1);
+  expect(await statusOf(page, slug, parentId)).toBe('waiting');
+  expect(await statusOf(page, slug, todoChildId)).toBe('todo');
+
+  // At 390 px the mother card keeps the same stacked layout as a leaf card and
+  // does not make the page scroll horizontally.
+  await page.setViewportSize({ width: 390, height: 800 });
+  await page.reload();
+  await page.click('#sidebar-toggle');
+  await expect(page.locator('#sidebar')).toHaveCSS('width', '0px');
+  await expect(cardIn(page, 'waiting', parentId)).toBeVisible();
+  const narrow = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    viewportWidth: window.innerWidth,
+  }));
+  expect(narrow.scrollWidth).toBeLessThanOrEqual(narrow.viewportWidth);
+
+  await context.close();
+});
+
+test("1.7b une branche active n’a qu’une carte, à sa ligne la plus profonde", async ({ browser }) => {
+  const { context, page } = await signedInPage(browser, stateB);
+
+  await page.goto('/administration');
+  const form = page.locator('#admin-domains .admin-create');
+  await form.locator('input[name="name"]').fill('Branche active');
+  await form.locator('button[type="submit"]').click();
+  const row = page.locator('#admin-domains-table tbody tr', { hasText: 'Branche active' });
+  await expect(row).toHaveCount(1);
+  const href = await row.locator('a.admin-url').getAttribute('href');
+  const slug = href.split('/').pop();
+
+  await page.goto(href);
+  const outline = await (await page.request.get(`/domaine/${slug}/api/outline`)).json();
+  const mother = outline[0];
+  const created = await page.request.post(`/domaine/${slug}/api/nodes`, {
+    form: { parentId: mother.id },
+  });
+  expect(created.ok()).toBeTruthy();
+  const childOutline = await (await page.request.get(`/domaine/${slug}/api/outline`)).json();
+  const child = findNode(childOutline, mother.id).children[0];
+
+  await page.request.post(`/domaine/${slug}/api/nodes/${mother.id}/status`, {
+    form: { status: 'in_progress', scope: 'head' },
+  });
+  await page.goto('/');
+  await expect(cardIn(page, 'in_progress', mother.id)).toHaveCount(1);
+
+  // The child becomes active: the mother card disappears and the child card
+  // carries the mother in its parent chain.
+  await page.request.post(`/domaine/${slug}/api/nodes/${child.id}/status`, {
+    form: { status: 'in_progress', scope: 'head' },
+  });
+  await page.goto('/');
+  await expect(page.locator(`#gtd-node-${mother.id}`)).toHaveCount(0);
+  const childCard = cardIn(page, 'in_progress', child.id);
+  await expect(childCard).toHaveCount(1);
+  await expect(childCard.locator('.home-task-parent')).toHaveText([mother.title]);
+  await expect(col(page, 'in_progress').locator('.gtd-card')).toHaveCount(1);
+
+  // The child returns to "En projet": the still-active mother is a card again.
+  await page.request.post(`/domaine/${slug}/api/nodes/${child.id}/status`, {
+    form: { status: 'todo', scope: 'head' },
+  });
+  await page.goto('/');
+  await expect(cardIn(page, 'in_progress', mother.id)).toHaveCount(1);
+  await expect(page.locator(`#gtd-node-${child.id}`)).toHaveCount(0);
 
   await context.close();
 });

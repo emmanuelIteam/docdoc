@@ -452,7 +452,7 @@ async function main() {
   res = await call('GET', '/');
   assert.strictEqual(res.status, 200, 'la racine sert la page d\u2019accueil');
   // The adopted domain's only line is todo: the board lists no card for it.
-  assert.match(res.text, /Tableau de bord/);
+  assert.match(res.text, /<h1>GTD<\/h1>/);
   assert.doesNotMatch(res.text, /Réserver le camping/);
   assert.match(res.text, /Aucune tâche/);
   res = await call('GET', '/domaine/voyages');

@@ -250,6 +250,45 @@ main { overflow-anchor: none; }
   white-space: nowrap;
 }
 
+/* Title block: the page title and, on the GTD page only, its subtitle. The
+   block takes the width left by the menu toggle and the shortcut, and
+   `min-width: 0` lets a long domain name ellipsize inside the h1 instead of
+   pushing the header controls out. */
+.topbar-title {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.topbar-subtitle {
+  margin: 0;
+  font-size: .8rem;
+  line-height: 1.2;
+  color: var(--done);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* GTD shortcut: right of the panel toggle, before the title, on every page.
+   Compact so it lines up with the toggle, and never shrinks. Its active state
+   mirrors the sidebar entry of the same page. `.btn.` keeps the specificity
+   above the generic `.btn` rules defined later in the file. */
+.btn.topbar-shortcut {
+  flex: 0 0 auto;
+  padding: .45rem .55rem;
+  font-size: .8rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+.btn.topbar-shortcut.active {
+  background: #eef2ff;
+  border-color: var(--accent);
+  color: var(--accent-dark);
+}
+.btn.topbar-shortcut:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
 /* Add-project control of a domain page. It sits in the sticky header, pushed to
    the right of the domain name, and never shrinks: a long name is ellipsized
    above instead of squeezing the button out of the header. Its target keeps the
@@ -1183,6 +1222,8 @@ h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
 }
 @media (max-width: 640px) {
   .labels-bar { right: .5rem; bottom: .5rem; padding: .3rem .4rem; }
+  /* Keep the menu toggle, the GTD shortcut and the title on one line. */
+  .btn.topbar-shortcut { padding: .4rem .45rem; }
   /* The panel is opened over the page on a narrow screen and its session box
      (passkeys, logout) sits at the bottom, right under the fixed bar: while the
      panel is displayed, the bar steps aside so it cannot cover it. It comes
